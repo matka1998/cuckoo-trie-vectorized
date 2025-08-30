@@ -17,6 +17,9 @@
 struct cuckoo_trie;
 typedef struct cuckoo_trie cuckoo_trie;
 
+struct cuckoo_trie_split;
+typedef struct cuckoo_trie_split cuckoo_trie_split;
+
 struct ct_iter;
 typedef struct ct_iter ct_iter;
 

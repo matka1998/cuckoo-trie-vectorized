@@ -1,4 +1,5 @@
 #include "atomics.h"
+#include <stdint.h>
 
 typedef struct {
 	ct_entry_local_copy entry;
@@ -53,6 +54,8 @@ struct ct_iter {
 
 uint64_t ptr_to_bucket(cuckoo_trie* trie, ct_entry_storage* entry);
 uint64_t entry_index_in_bucket(ct_entry_storage* entry);
+uint64_t entry_index_in_bucket_common_header(ct_common_header_storage* entry);
+uint64_t entry_index_in_bucket_split_view(ct_entry_storage* entry);
 uint64_t hash_to_bucket(uint64_t x);
 uint64_t hash_to_tag(uint64_t x);
 uint64_t accumulate_hash(cuckoo_trie* trie, uint64_t x, uint64_t symbol);

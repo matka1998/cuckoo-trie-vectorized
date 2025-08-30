@@ -53,8 +53,44 @@ uint64_t entry_index_in_bucket(ct_entry_storage* entry) {
 	return (((uint8_t*)entry) - entries_start) / sizeof(ct_entry_storage);
 }
 
+uint64_t entry_index_in_bucket_common_header(ct_common_header_storage* entry) {
+	assert(sizeof(ct_bucket_split) == 64 || sizeof(ct_bucket_split) == 128);
+
+	// Optimize the common case
+	if (sizeof(ct_common_header_storage) == 15)
+		return ((~((uintptr_t)entry)) + 1) & 0xf;
+
+	// We assume that buckets are aligned to a multiple of sizeof(ct_bucket_split)
+	ct_bucket_split* bucket_start = (ct_bucket_split*) ( ((uintptr_t)entry) & (~(sizeof(ct_bucket_split) - 1)) );
+	uint8_t* entries_start = (uint8_t*)(bucket_start->common_header_cells);
+	assert((((uint8_t*)entry) - entries_start) % sizeof(ct_common_header_storage) == 0);
+	return (((uint8_t*)entry) - entries_start) / sizeof(ct_common_header_storage);
+}
+
+
+uint64_t entry_index_in_bucket_type_specific(ct_type_specific_entry_storage* entry) {
+	assert(sizeof(ct_bucket_split) == 64 || sizeof(ct_bucket_split) == 128);
+
+	// Optimize the common case
+	if (sizeof(ct_type_specific_entry_storage) == 15)
+		return ((~((uintptr_t)entry)) + 1) & 0xf;
+
+	// We assume that buckets are aligned to a multiple of sizeof(ct_bucket_split)
+	ct_bucket_split* bucket_start = (ct_bucket_split*) ( ((uintptr_t)entry) & (~(sizeof(ct_bucket_split) - 1)) );
+	uint8_t* entries_start = (uint8_t*)(bucket_start->type_specific_cells);
+	assert((((uint8_t*)entry) - entries_start) % sizeof(ct_type_specific_entry_storage) == 0);
+	return (((uint8_t*)entry) - entries_start) / sizeof(ct_type_specific_entry_storage);
+}
+
 // Compute the secondary bucket number given the primary
 uint64_t mix_bucket(cuckoo_trie* trie, uint64_t bucket_num, uint64_t tag) {
+	uint64_t mix_value = trie->bucket_mix_table[tag];
+	int64_t result = bucket_num - mix_value;
+	result += trie->num_buckets & (result < 0 ? ((uint64_t)-1) : 0);
+	return result;
+}
+
+uint64_t mix_bucket_split_view(cuckoo_trie_split* trie, uint64_t bucket_num, uint64_t tag) {
 	uint64_t mix_value = trie->bucket_mix_table[tag];
 	int64_t result = bucket_num - mix_value;
 	result += trie->num_buckets & (result < 0 ? ((uint64_t)-1) : 0);
@@ -70,6 +106,17 @@ uint64_t unmix_bucket(cuckoo_trie* trie, uint64_t bucket_num, uint64_t tag) {
 		result -= trie->num_buckets;
 
 	assert(mix_bucket(trie, result, tag) == bucket_num);
+	return result;
+}
+
+uint64_t unmix_bucket_split_view(cuckoo_trie_split* trie, uint64_t bucket_num, uint64_t tag) {
+	int64_t result;
+	uint64_t mix_value = trie->bucket_mix_table[tag];
+	result = bucket_num + mix_value;
+	if (result >= trie->num_buckets)
+		result -= trie->num_buckets;
+
+	assert(mix_bucket_split_view(trie, result, tag) == bucket_num);
 	return result;
 }
 
@@ -92,6 +139,13 @@ uint64_t alternate_bucket(cuckoo_trie* trie, ct_entry_storage* entry, uint64_t b
 		return unmix_bucket(trie, bucket_num, entry_tag((ct_entry*) entry));
 	else
 		return mix_bucket(trie, bucket_num, entry_tag((ct_entry*) entry));
+}
+
+uint64_t alternate_bucket_split_view(cuckoo_trie_split* trie, ct_common_header_storage* entry, uint64_t bucket_num) {
+	if (entry_is_secondary_common_header((ct_common_header*) entry))
+		return unmix_bucket_split_view(trie, bucket_num, entry_tag_common_header((ct_common_header*) entry));
+	else
+		return mix_bucket_split_view(trie, bucket_num, entry_tag_common_header((ct_common_header*) entry));
 }
 
 uint64_t hash_to_bucket(uint64_t x) {
@@ -203,6 +257,78 @@ void prefetch_bucket_pair(cuckoo_trie* trie, uint64_t primary_bucket, uint8_t ta
 	}
 }
 
+
+ct_entry_descriptor find_entry_in_bucket_by_color_split_view(ct_bucket_split* bucket,
+												ct_entry_local_copy_split* result, uint64_t is_secondary,
+												uint64_t tag, uint64_t color) {
+	int i;
+	ct_common_header common_header = {0};
+
+	common_header.color_and_tag = (tag & ((1 << TAG_BITS) - 1)) | ((color & 0xFF) << TAG_BITS);
+
+	// header_mask |= ((1ULL << TAG_BITS) - 1) << (8*offsetof(ct_entry, color_and_tag));
+	// header_values |= tag << (8*offsetof(ct_entry, color_and_tag));
+
+	// header_mask |= ((uint64_t)((0xFF << TAG_BITS) & 0xFF)) << (8*offsetof(ct_entry, color_and_tag));
+	// header_values |= color << (8*offsetof(ct_entry, color_and_tag) + TAG_BITS);
+
+	common_header.parent_color_and_flags = (is_secondary ? FLAG_SECONDARY_BUCKET : 0);
+
+	// header_mask |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
+	// if (is_secondary)
+	// 	header_values |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
+
+#ifdef MULTITHREADING
+	uint32_t start_counter = read_int_atomic(&(bucket->write_lock_and_seq));
+	if (start_counter & SEQ_INCREMENT)
+		return (ct_entry_descriptor){0};   // Bucket is being written. The retry loop will call us again.
+#else
+	assert(bucket->write_lock_and_seq == 0);
+#endif
+
+	uint64_t header_mask = 0;
+	uint64_t header_values = 0;
+
+	header_mask |= ((1ULL << TAG_BITS) - 1) << (8*offsetof(ct_common_header, color_and_tag));
+	header_values |= tag << (8*offsetof(ct_common_header, color_and_tag));
+
+	header_mask |= ((uint64_t)((0xFF << TAG_BITS) & 0xFF)) << (8*offsetof(ct_common_header, color_and_tag));
+	header_values |= color << (8*offsetof(ct_common_header, color_and_tag) + TAG_BITS);
+
+	header_mask |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_common_header, parent_color_and_flags));
+	if (is_secondary)
+		header_values |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_common_header, parent_color_and_flags));
+
+	for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
+		read_entry_non_atomic_split_view(&(bucket->common_header_cells[i]), &(bucket->type_specific_cells[i]), &result->header, &result->type_specific);
+		uint64_t header = *((uint64_t*) (&(result->header)));
+		if ((header & header_mask) == header_values)
+			break;
+	}
+	if (i == CUCKOO_BUCKET_SIZE)
+		return (ct_entry_descriptor){0};
+
+#ifdef MULTITHREADING
+	if (read_int_atomic(&(bucket->write_lock_and_seq)) != start_counter) {
+		// The bucket changed while we read it. We rely on the retry loop in
+		// find_entry_in_pair_by_color to call us again
+		return (ct_entry_descriptor){0};
+	}
+	result->last_seq = start_counter;
+#endif
+
+	result->last_common_pos = &(bucket->common_header_cells[i]);
+	result->last_type_specific_pos = &(bucket->type_specific_cells[i]);
+	// result->last_pos = &(bucket->cells[i]);
+
+	if (!result->last_common_pos || !result->last_type_specific_pos)
+		__builtin_unreachable();
+	return (ct_entry_descriptor){
+		.common_header = result->last_common_pos,
+		.type_specific = result->last_type_specific_pos
+	};
+}
+
 ct_entry_storage* find_entry_in_bucket_by_color(ct_bucket* bucket,
 												ct_entry_local_copy* result, uint64_t is_secondary,
 												uint64_t tag, uint64_t color) {
@@ -251,6 +377,70 @@ ct_entry_storage* find_entry_in_bucket_by_color(ct_bucket* bucket,
 	if (!result->last_pos)
 		__builtin_unreachable();
 	return result->last_pos;
+}
+
+ct_entry_descriptor find_entry_in_bucket_by_parent_split_view(ct_bucket_split* bucket,
+												ct_entry_local_copy_split* result, uint64_t is_secondary,
+												uint64_t tag, uint64_t last_symbol, uint64_t parent_color) {
+	int i;
+	ct_common_header common_header = {0};
+
+	common_header.color_and_tag = (tag & ((1 << TAG_BITS) - 1)) | ((parent_color & 0xFF) << TAG_BITS);
+	common_header.parent_color_and_flags = (is_secondary ? FLAG_SECONDARY_BUCKET : 0);
+
+#ifdef MULTITHREADING
+	uint32_t start_counter = read_int_atomic(&(bucket->write_lock_and_seq));
+	if (start_counter & SEQ_INCREMENT)
+		return (ct_entry_descriptor){0};   // Bucket is being written. The retry loop will call us again.
+#else
+	assert(bucket->write_lock_and_seq == 0);
+#endif
+
+	uint64_t header_mask = 0;
+	uint64_t header_values = 0;
+
+	header_mask |= ((1ULL << TAG_BITS) - 1) << (8*offsetof(ct_common_header, color_and_tag));
+	header_values |= tag << (8*offsetof(ct_common_header, color_and_tag));
+
+	header_mask |= 0xFFULL << (8*offsetof(ct_common_header, last_symbol));
+	header_values |= last_symbol << (8*offsetof(ct_common_header, last_symbol));
+
+	const uint64_t parent_color_mask = (0xFFULL << PARENT_COLOR_SHIFT) & 0xFF;
+	header_mask |= parent_color_mask << (8*offsetof(ct_common_header, parent_color_and_flags));
+	header_values |= parent_color << (8*offsetof(ct_common_header, parent_color_and_flags) + PARENT_COLOR_SHIFT);
+
+	header_mask |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_common_header, parent_color_and_flags));
+	if (is_secondary)
+		header_values |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_common_header, parent_color_and_flags));
+
+	for (i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
+		read_entry_non_atomic_split_view(&(bucket->common_header_cells[i]), &(bucket->type_specific_cells[i]), &result->header, &result->type_specific);
+		uint64_t header = *((uint64_t*) (&(result->header)));
+		if (((header & header_mask) == header_values)) {
+			assert(entry_type_common_header(&result->header) != TYPE_UNUSED);
+			break;
+		}
+	}
+	if (i == CUCKOO_BUCKET_SIZE)
+		return (ct_entry_descriptor){0};
+
+#ifdef MULTITHREADING
+	if (read_int_atomic(&(bucket->write_lock_and_seq)) != start_counter) {
+		// The bucket changed while we read it. We rely on the retry loop in
+		// find_entry_in_pair_by_parent_split_view to call us again
+		return (ct_entry_descriptor){0};
+	}
+	result->last_seq = start_counter;
+#endif
+
+	result->last_common_pos = &(bucket->common_header_cells[i]);
+	result->last_type_specific_pos = &(bucket->type_specific_cells[i]);
+	if (!result->last_common_pos || !result->last_type_specific_pos)
+		__builtin_unreachable();
+	return (ct_entry_descriptor){
+		.common_header = result->last_common_pos,
+		.type_specific = result->last_type_specific_pos
+	};
 }
 
 ct_entry_storage* find_entry_in_bucket_by_parent(ct_bucket* bucket,
@@ -383,6 +573,21 @@ ct_entry_storage* find_free_cell_in_bucket(ct_bucket* bucket) {
 	return NULL;
 }
 
+ct_entry_descriptor find_free_cell_in_bucket_split_view(ct_bucket_split* bucket) {
+	int i;
+
+	for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
+		ct_common_header_storage* entry = &(bucket->common_header_cells[i]);
+		if (entry_type_common_header((ct_common_header*) entry) == TYPE_UNUSED)
+			return (ct_entry_descriptor){
+				.common_header = entry,
+				.type_specific = &(bucket->type_specific_cells[i])
+			};
+	}
+
+	return (ct_entry_descriptor){0};
+}
+
 ct_entry_storage* find_root(cuckoo_trie* trie, ct_entry_local_copy* result) {
 	uint64_t root_primary_bucket = hash_to_bucket(HASH_START_VALUE);
 	ct_entry_storage* root_pos = &(trie->buckets[root_primary_bucket].cells[0]);
@@ -390,6 +595,22 @@ ct_entry_storage* find_root(cuckoo_trie* trie, ct_entry_local_copy* result) {
 	result->last_pos = root_pos;
 	result->primary_bucket = root_primary_bucket;
 	return result->last_pos;
+}
+
+ct_entry_descriptor find_root_split_view(cuckoo_trie_split* trie, ct_entry_local_copy_split* result) {
+	uint64_t root_primary_bucket = hash_to_bucket(HASH_START_VALUE);
+	ct_common_header_storage* root_common_pos = &(trie->buckets[root_primary_bucket].common_header_cells[0]);
+	ct_type_specific_entry_storage* root_type_specific_pos = &(trie->buckets[root_primary_bucket].type_specific_cells[0]);
+	result->last_seq = read_entry_split_view(root_common_pos, root_type_specific_pos, &(result->header), &(result->type_specific));
+
+	result->last_common_pos = root_common_pos;
+	result->last_type_specific_pos = root_type_specific_pos;
+	result->primary_bucket = root_primary_bucket;
+
+	return (ct_entry_descriptor){
+		.common_header = result->last_common_pos,
+		.type_specific = result->last_type_specific_pos
+	};
 }
 
 void locator_to_entry(cuckoo_trie* trie, ct_entry_locator* locator, ct_entry_local_copy* result) {
@@ -911,6 +1132,150 @@ release_locks:
 
 	return return_value;
 }
+
+// // Relocate an entry from bucket <bucket_num> to create a free cell in it.
+// // Immovable entry - an entry that should not be moved while relocating
+// int relocate_entry_split_view(cuckoo_trie_split* trie, ct_lock_mgr_split* lock_mgr, uint64_t bucket_num,
+// 				   ct_common_header_storage* immovable_header_entry, ct_common_header_storage** header_output, ct_type_specific_entry_storage** type_specific_output) {
+
+// 	int i, j;
+// 	int ret;
+// 	int return_value = SI_OK;
+// 	relocation_queue_entry queue[RELOCATE_QUEUE_SIZE];
+// 	ct_entry_storage* free_cell;
+// 	ct_entry_storage* occupied_cell;
+// 	ct_common_header_storage* root = &(trie->buckets[hash_to_bucket(HASH_START_VALUE)].common_header_cells[0]);
+// 	ct_bucket_read_lock_split read_lock;
+// 	int free_cell_found = 0;
+// 	int queue_pos = 0;
+// 	int queue_size = 0;
+// 	int buckets_read_locked = 0;
+// 	uint64_t child_bucket_num;
+// 	int occupied_queue_pos, child_idx;
+
+// 	assert(bucket_write_locked(lock_mgr, &(trie->buckets[bucket_num])));
+// 	queue[0].bucket = bucket_num;
+// 	queue[0].parent_queue_pos = -1;
+// 	queue_size++;
+
+// 	while (queue_pos < queue_size && !free_cell_found) {
+// 		// we know that the bucket queue[queue_pos] is full (otherwise we
+// 		// wouldn't have inserted it). scan the alternate positions of the entries
+// 		// in it.
+
+// 		for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
+// 			ct_common_header_storage* entry = &(trie->buckets[queue[queue_pos].bucket].common_header_cells[i]);
+
+// 			if (entry == immovable_header_entry)
+// 				continue;
+
+// 			if (entry == root)
+// 				continue;
+
+// 			child_bucket_num = alternate_bucket_split_view(trie, entry, queue[queue_pos].bucket);
+
+// 			int already_inserted = 0;
+// 			for (j = 0;j < queue_size;j++) {
+// 				if (queue[j].bucket == child_bucket_num) {
+// 					already_inserted = 1;
+// 					break;
+// 				}
+// 			}
+// 			if (already_inserted)
+// 				continue;
+
+// 			read_lock_bucket_split_view(&(trie->buckets[child_bucket_num]), &read_lock);
+// 			free_cell = find_free_cell_in_bucket(&(trie->buckets[child_bucket_num]));
+
+// 			if (free_cell == NULL) {
+// 				// The alternate bucket has no free cells. Put it in the queue for later.
+// 				if (queue_size < RELOCATE_QUEUE_SIZE) {
+// 					queue[queue_size].bucket = child_bucket_num;
+// 					queue[queue_size].read_lock = read_lock;
+// 					queue[queue_size].parent_queue_pos = queue_pos;
+// 					queue[queue_size].child_idx = i;
+// 					queue_size++;
+// 				}
+// 			} else {
+// 				// We found a free cell.
+// 				free_cell_found = 1;
+
+// 				// Remember which child generated it
+// 				child_idx = i;
+// 				break;
+// 			}
+// 		}
+// 		queue_pos++;
+// 	}
+
+// 	if (!free_cell_found)
+// 		return SI_FAIL;  // Enlarging the table isn't implemented yet
+
+// 	// Upgrade locks on all buckets in the path
+// 	ret = upgrade_bucket_lock(lock_mgr, &read_lock);
+// 	if (ret == SI_RETRY)
+// 		return SI_RETRY;
+// 	buckets_read_locked++;
+// 	occupied_queue_pos = queue_pos - 1;
+// 	while (1) {
+// 		if (occupied_queue_pos == 0)
+// 			break;
+
+// 		ret = upgrade_bucket_lock(lock_mgr, &(queue[occupied_queue_pos].read_lock));
+// 		if (ret == SI_RETRY) {
+// 			return_value = SI_RETRY;
+// 			goto release_locks;
+// 		}
+// 		buckets_read_locked++;
+// 		occupied_queue_pos = queue[occupied_queue_pos].parent_queue_pos;
+// 	}
+
+// 	// Move entries one position along the path
+// 	ct_entry entry_buf;
+// 	occupied_queue_pos = queue_pos - 1;
+// 	while (1) {
+// 		occupied_cell = &(trie->buckets[queue[occupied_queue_pos].bucket].cells[child_idx]);
+
+// 		// The read here is non-atomic, but that's fine as the bucket is write-locked
+// 		debug_log("relocate_entry: Moving %p -> %p\n", occupied_cell, free_cell);
+// 		read_entry_non_atomic(occupied_cell, &entry_buf);
+// 		entry_buf.parent_color_and_flags ^= FLAG_SECONDARY_BUCKET;
+// 		write_entry(free_cell, &entry_buf);
+// 		move_entry_lock(lock_mgr, free_cell, occupied_cell);
+
+// 		if (occupied_queue_pos == 0)
+// 			break;   // We reached the first queue entry
+
+// 		child_idx = queue[occupied_queue_pos].child_idx;
+// 		occupied_queue_pos = queue[occupied_queue_pos].parent_queue_pos;
+// 		free_cell = occupied_cell;
+// 	}
+
+// 	// Mark the cell we freed as empty
+// 	entry_buf.parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_UNUSED;
+// 	entry_buf.color_and_tag = INVALID_COLOR << TAG_BITS;
+// 	write_entry(occupied_cell, &entry_buf);
+
+// 	// Release write locks
+// release_locks:
+// 	release_bucket_lock(lock_mgr, &(trie->buckets[child_bucket_num]));
+// 	buckets_read_locked--;
+// 	occupied_queue_pos = queue_pos - 1;
+// 	while (buckets_read_locked) {
+// 		release_bucket_lock(lock_mgr, &(trie->buckets[queue[occupied_queue_pos].bucket]));
+// 		buckets_read_locked--;
+// 		occupied_queue_pos = queue[occupied_queue_pos].parent_queue_pos;
+// 	}
+// 	// By now we should've reached the path start (the first entry in the queue is the
+// 	// original bucket passed to this function, which was already locked, so we don't
+// 	// release it).
+// 	assert(occupied_queue_pos == 0);
+
+// 	if (return_value == SI_OK)
+// 		*output = occupied_cell;
+
+// 	return return_value;
+// }
 
 // Finds an empty slot for <entry> in the hash and puts it there. Sets entry->color and entry->tag
 // to the correct values. Everything else should be set by the caller.
