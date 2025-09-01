@@ -140,6 +140,20 @@ void entry_set_parent_color_atomic(ct_entry_storage* entry, uint8_t parent_color
 #endif
 }
 
+void entry_set_parent_color_atomic_split_view(ct_common_header_storage* entry_header, ct_type_specific_entry_storage* entry_type_specific, uint8_t parent_color) {
+#ifndef MULTITHREADING
+	UNUSED_PARAMETER(entry_type_specific);
+	entry_set_parent_color_common_header(entry_header, parent_color);
+#else
+	ct_entry new_entry;
+	ct_common_header new_entry_header;
+	ct_type_specific_entry new_entry_type_specific;
+	read_entry_non_atomic_split_view(entry_header, entry_type_specific, &new_entry_header, &new_entry_type_specific);
+	entry_set_parent_color_common_header(&new_entry_header, parent_color);
+	write_entry_split_view(entry_header, entry_type_specific, &new_entry_header, &new_entry_type_specific);
+#endif
+}
+
 int try_take_lock(ct_bucket* bucket) {
 #ifndef MULTITHREADING
 	UNUSED_PARAMETER(bucket);
@@ -753,7 +767,7 @@ void write_unlock(ct_lock_mgr* lock_mgr, ct_entry_storage* entry) {
 #endif
 }
 
-void write_unlock_split_view(ct_lock_mgr_split* lock_mgr, ct_common_header_storage* entry) {
+void write_unlock_common_header(ct_lock_mgr_split* lock_mgr, ct_common_header_storage* entry) {
 #ifndef MULTITHREADING
 	UNUSED_PARAMETER(lock_mgr);
 	UNUSED_PARAMETER(entry);

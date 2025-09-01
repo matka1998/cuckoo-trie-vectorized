@@ -250,6 +250,14 @@ static inline ct_entry_storage* trie_min_leaf(cuckoo_trie* trie) {
 	return &(trie->min_leaf_bucket->cells[0]);
 }
 
+static inline ct_common_header_storage* trie_min_leaf_common_header(cuckoo_trie_split* trie) {
+	return &(trie->min_leaf_bucket->common_header_cells[0]);
+}
+
+static inline ct_type_specific_entry_storage* trie_min_leaf_type_specific(cuckoo_trie_split* trie) {
+	return &(trie->min_leaf_bucket->type_specific_cells[0]);
+}
+
 static inline ct_entry_descriptor trie_min_leaf_split_view(cuckoo_trie_split* trie) {
 	return (ct_entry_descriptor){
 		.common_header = &(trie->min_leaf_bucket->common_header_cells[0]),
@@ -465,8 +473,9 @@ static inline int entry_jump_size(ct_entry* entry) {
 	return (entry->child_color_and_jump_size & ((1 << CHILD_COLOR_SHIFT) - 1));
 }
 
-static inline int entry_jump_size_type_specific(ct_entry* entry) {
-	assert(entry_type(entry) == TYPE_JUMP);
+static inline int entry_jump_size_type_specific(ct_type_specific_entry* entry) {
+	// I don't want to pass the common header only for the assertion, so let's just assume there is no shenanigans.
+	// assert(entry_type(entry) == TYPE_JUMP);
 	return (entry->child_color_and_jump_size & ((1 << CHILD_COLOR_SHIFT) - 1));
 }
 
@@ -475,8 +484,9 @@ static inline int entry_child_color(ct_entry* entry) {
 	return (entry->child_color_and_jump_size >> CHILD_COLOR_SHIFT);
 }
 
-static inline int entry_child_color_type_specific(ct_entry* entry) {
-	assert(entry_type(entry) == TYPE_JUMP);
+static inline int entry_child_color_type_specific(ct_type_specific_entry* entry) {
+	// I don't want to pass the common header only for the assertion, so let's just assume there is no shenanigans.
+	// assert(entry_type(entry) == TYPE_JUMP);
 	return (entry->child_color_and_jump_size >> CHILD_COLOR_SHIFT);
 }
 
@@ -486,8 +496,9 @@ static inline void entry_set_jump_size(ct_entry* entry, uint8_t jump_size) {
 	entry->child_color_and_jump_size |= jump_size;
 }
 
-static inline void entry_set_jump_size_type_specific(ct_entry* entry, uint8_t jump_size) {
-	assert(entry_type(entry) == TYPE_JUMP);
+static inline void entry_set_jump_size_type_specific(ct_type_specific_entry* entry, uint8_t jump_size) {
+	// I don't want to pass the common header only for the assertion, so let's just assume there is no shenanigans.
+	// assert(entry_type(entry) == TYPE_JUMP);
 	entry->child_color_and_jump_size &= ~((1 << CHILD_COLOR_SHIFT) - 1);
 	entry->child_color_and_jump_size |= jump_size;
 }
@@ -498,8 +509,9 @@ static inline void entry_set_child_color(ct_entry* entry, uint8_t child_color) {
 	entry->child_color_and_jump_size |= child_color << CHILD_COLOR_SHIFT;
 }
 
-static inline void entry_set_child_color_type_specific(ct_entry* entry, uint8_t child_color) {
-	assert(entry_type(entry) == TYPE_JUMP);
+static inline void entry_set_child_color_type_specific(ct_type_specific_entry* entry, uint8_t child_color) {
+	// I don't want to pass the common header only for the assertion, so let's just assume there is no shenanigans.
+	// assert(entry_type(entry) == TYPE_JUMP);
 	entry->child_color_and_jump_size &= ((1 << CHILD_COLOR_SHIFT) - 1);
 	entry->child_color_and_jump_size |= child_color << CHILD_COLOR_SHIFT;
 }

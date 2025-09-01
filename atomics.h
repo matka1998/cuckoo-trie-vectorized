@@ -62,7 +62,7 @@ static inline void init_lock_mgr(ct_lock_mgr* lock_mgr, cuckoo_trie* trie) {
 	lock_mgr->next_write_lock = &(lock_mgr->bucket_write_locks[0]);
 }
 
-static inline void init_lock_mgr_split(ct_lock_mgr_split* lock_mgr, cuckoo_trie_split* trie) {
+static inline void init_lock_mgr_split_view(ct_lock_mgr_split* lock_mgr, cuckoo_trie_split* trie) {
 	lock_mgr->trie = trie;
 	lock_mgr->next_write_lock = &(lock_mgr->bucket_write_locks[0]);
 }
@@ -255,18 +255,28 @@ uint32_t read_int_atomic(uint32_t* addr);
 uint32_t write_entry(ct_entry_storage* target, const ct_entry* src);
 uint32_t write_entry_split_view(ct_common_header_storage* common_header_target, ct_type_specific_entry_storage* type_specific_target, const ct_common_header* common_src, const ct_type_specific_entry* type_specific_src);
 void entry_set_parent_color_atomic(ct_entry_storage* entry, uint8_t parent_color);
+void entry_set_parent_color_atomic_split_view(ct_common_header_storage* entry_header, ct_type_specific_entry_storage* entry_type_specific, uint8_t parent_color);
 uint64_t bucket_write_locked(ct_lock_mgr* lock_mgr, ct_bucket* bucket_num);
+uint64_t bucket_write_locked_split_view(ct_lock_mgr_split* lock_mgr, ct_bucket_split* bucket_num);
 void read_lock_bucket(ct_bucket* bucket_num, ct_bucket_read_lock* read_lock);
 void read_lock_bucket_split_view(ct_bucket_split* bucket, ct_bucket_read_lock_split* read_lock);
 int read_unlock_bucket(ct_bucket_read_lock* read_lock);
+int read_unlock_bucket_split_view(ct_bucket_read_lock_split* read_lock);
 ct_bucket_write_lock* write_lock_bucket(ct_lock_mgr* lock_mgr, ct_bucket* bucket_num);
+ct_bucket_write_lock_split* write_lock_bucket_split_view(ct_lock_mgr_split* lock_mgr, ct_bucket_split* bucket);
 int upgrade_bucket_lock(ct_lock_mgr* lock_mgr, ct_bucket_read_lock* read_lock);
+int upgrade_bucket_lock_split_view(ct_lock_mgr_split* lock_mgr, ct_bucket_read_lock_split* read_lock);
 void release_bucket_lock(ct_lock_mgr* lock_mgr, ct_bucket* bucket_num);
 void release_bucket_lock_split_view(ct_lock_mgr_split* lock_mgr, ct_bucket_split* bucket_num);
 
 void write_lock_entry_in_locked_bucket(ct_lock_mgr* lock_mgr, ct_entry_storage* entry);
+void write_lock_entry_in_locked_bucket_split_view(ct_lock_mgr_split* lock_mgr, ct_common_header_storage* entry);
 void move_entry_lock(ct_lock_mgr* lock_mgr, ct_entry_storage* dst, ct_entry_storage* src);
+void move_entry_lock_split_view(ct_lock_mgr_split* lock_mgr, ct_common_header_storage * header_dst, ct_common_header_storage* header_src);
 int upgrade_lock(ct_lock_mgr* lock_mgr, ct_entry_local_copy* entry);
+int upgrade_lock_split_view(ct_lock_mgr_split* lock_mgr, ct_entry_local_copy_split* entry);
 void upgrade_lock_wait(ct_lock_mgr* lock_mgr, ct_entry_local_copy* entry);
 void write_unlock(ct_lock_mgr* lock_mgr, ct_entry_storage* entry);
+void write_unlock_common_header(ct_lock_mgr_split* lock_mgr, ct_common_header_storage* entry);
 void release_all_locks(ct_lock_mgr* lock_mgr);
+void release_all_locks_split_view(ct_lock_mgr_split* lock_mgr);

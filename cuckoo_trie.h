@@ -23,6 +23,9 @@ typedef struct cuckoo_trie_split cuckoo_trie_split;
 struct ct_iter;
 typedef struct ct_iter ct_iter;
 
+struct ct_iter_split;
+typedef struct ct_iter_split ct_iter_split;
+
 EXPORT int ct_insert(cuckoo_trie* trie, ct_kv* kv);
 EXPORT int ct_upsert(cuckoo_trie* trie, ct_kv* kv, int* created_new);
 EXPORT int ct_update(cuckoo_trie* trie, ct_kv* kv);

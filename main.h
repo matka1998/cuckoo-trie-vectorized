@@ -7,6 +7,11 @@ typedef struct {
 } ct_path_entry;
 
 typedef struct {
+	ct_entry_local_copy_split entry;
+	uint64_t prefix_hash;
+} ct_path_entry_split;
+
+typedef struct {
 	ct_entry_local_copy containing_entry;
 	ct_path_entry* last_path_entry;   // points inside finger.path
 	uint64_t prefix_len;
@@ -21,6 +26,22 @@ typedef struct {
 	// Each entry is a different node. Includes the node the finger is currently in.
 	ct_path_entry path[MAX_KEY_SYMBOLS];
 } ct_finger;
+
+typedef struct {
+	ct_entry_local_copy_split containing_entry;
+	ct_path_entry_split* last_path_entry;   // points inside finger.path
+	uint64_t prefix_len;
+	uint64_t prefix_hash;
+	uint8_t last_prefix_symbol;
+
+	// If the finger is in the middle of a jump node, how deep it is, in symbols
+	uint64_t depth_in_jump;
+	cuckoo_trie_split* trie;
+	ct_lock_mgr_split lock_mgr;
+
+	// Each entry is a different node. Includes the node the finger is currently in.
+	ct_path_entry_split path[MAX_KEY_SYMBOLS];
+} ct_finger_split;
 
 // Finding the predecessor of a node consists of three stages: ascending until we can descend to the left,
 // descending once to the left and going to the maximal leaf under that node. ct_pred_locator stores
@@ -42,6 +63,21 @@ typedef struct {
 	ct_finger* finger;
 } ct_pred_locator;
 
+typedef struct {
+	// subtree[0] is the maximal subtree smaller than the key, subtree[1] is the maximal
+	// subtree smaller than subtree[0].
+	struct {
+		// The position of the parent bitmap of this subtree in the path of the associated finger
+		ct_path_entry_split* path_pos;
+
+		uint64_t primary_bucket;
+		uint8_t parent_color;
+		uint8_t last_symbol;
+		uint8_t tag;
+	} subtree[NUM_LINKED_LISTS];
+	ct_entry_local_copy_split predecessor[NUM_LINKED_LISTS];
+	ct_finger_split* finger;
+} ct_pred_locator_split;
 struct ct_iter {
 	int is_exhausted;
 
@@ -50,6 +86,16 @@ struct ct_iter {
 	int report_current;
 	ct_entry_local_copy leaves[NUM_LINKED_LISTS];
 	cuckoo_trie* trie;
+};
+
+struct ct_iter_split {
+	int is_exhausted;
+
+	// If 0, fetch a new leaf and return it in ct_iter_next.
+	// If 1, report the maximal leaf already stored in the iterator.
+	int report_current;
+	ct_entry_local_copy_split leaves[NUM_LINKED_LISTS];
+	cuckoo_trie_split* trie;
 };
 
 uint64_t ptr_to_bucket(cuckoo_trie* trie, ct_entry_storage* entry);
