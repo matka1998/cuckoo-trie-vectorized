@@ -38,6 +38,13 @@ uint64_t ptr_to_bucket(cuckoo_trie* trie, ct_entry_storage* entry) {
 	return ((uintptr_t)entry - (uintptr_t)(trie->buckets)) / sizeof(ct_bucket);
 }
 
+uint64_t ptr_to_bucket_common_header(cuckoo_trie_split* trie, ct_common_header_storage* entry) {
+	return ((uintptr_t)entry - (uintptr_t)(trie->buckets)) / sizeof(ct_bucket_split);
+}
+
+uint64_t ptr_to_bucket_type_specific(cuckoo_trie_split* trie, ct_type_specific_entry_storage* entry) {
+	return ((uintptr_t)entry - (uintptr_t)(trie->buckets)) / sizeof(ct_bucket_split);
+}
 
 uint64_t entry_index_in_bucket(ct_entry_storage* entry) {
 	assert(sizeof(ct_bucket) == 64 || sizeof(ct_bucket) == 128);
