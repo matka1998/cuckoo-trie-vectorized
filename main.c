@@ -346,21 +346,6 @@ ct_entry_descriptor find_entry_in_bucket_by_color_split_view(ct_bucket_split* bu
 												ct_entry_local_copy_split* result, uint64_t is_secondary,
 												uint64_t tag, uint64_t color) {
 	int i;
-	ct_common_header common_header = {0};
-
-	common_header.color_and_tag = (tag & ((1 << TAG_BITS) - 1)) | ((color & 0xFF) << TAG_BITS);
-
-	// header_mask |= ((1ULL << TAG_BITS) - 1) << (8*offsetof(ct_entry, color_and_tag));
-	// header_values |= tag << (8*offsetof(ct_entry, color_and_tag));
-
-	// header_mask |= ((uint64_t)((0xFF << TAG_BITS) & 0xFF)) << (8*offsetof(ct_entry, color_and_tag));
-	// header_values |= color << (8*offsetof(ct_entry, color_and_tag) + TAG_BITS);
-
-	common_header.parent_color_and_flags = (is_secondary ? FLAG_SECONDARY_BUCKET : 0);
-
-	// header_mask |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
-	// if (is_secondary)
-	// 	header_values |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
 
 #ifdef MULTITHREADING
 	uint32_t start_counter = read_int_atomic(&(bucket->write_lock_and_seq));
@@ -370,13 +355,13 @@ ct_entry_descriptor find_entry_in_bucket_by_color_split_view(ct_bucket_split* bu
 	assert(bucket->write_lock_and_seq == 0);
 #endif
 
-	uint64_t header_mask = 0;
-	uint64_t header_values = 0;
+	uint32_t header_mask = 0;
+	uint32_t header_values = 0;
 
 	header_mask |= ((1ULL << TAG_BITS) - 1) << (8*offsetof(ct_common_header, color_and_tag));
 	header_values |= tag << (8*offsetof(ct_common_header, color_and_tag));
 
-	header_mask |= ((uint64_t)((0xFF << TAG_BITS) & 0xFF)) << (8*offsetof(ct_common_header, color_and_tag));
+	header_mask |= ((uint32_t)((0xFF << TAG_BITS) & 0xFF)) << (8*offsetof(ct_common_header, color_and_tag));
 	header_values |= color << (8*offsetof(ct_common_header, color_and_tag) + TAG_BITS);
 
 	header_mask |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_common_header, parent_color_and_flags));
@@ -385,7 +370,7 @@ ct_entry_descriptor find_entry_in_bucket_by_color_split_view(ct_bucket_split* bu
 
 	for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
 		read_entry_non_atomic_split_view(&(bucket->common_header_cells[i]), &(bucket->type_specific_cells[i]), &result->header, &result->type_specific);
-		uint64_t header = *((uint64_t*) (&(result->header)));
+		uint32_t header = *((uint32_t*) (&(result->header)));
 		if ((header & header_mask) == header_values)
 			break;
 	}
@@ -472,14 +457,6 @@ ct_entry_descriptor find_entry_in_bucket_by_parent_split_view(ct_bucket_split* b
 	common_header.color_and_tag = (tag & ((1 << TAG_BITS) - 1)) | ((parent_color & 0xFF) << TAG_BITS);
 	common_header.parent_color_and_flags = (is_secondary ? FLAG_SECONDARY_BUCKET : 0);
 
-#ifdef MULTITHREADING
-	uint32_t start_counter = read_int_atomic(&(bucket->write_lock_and_seq));
-	if (start_counter & SEQ_INCREMENT)
-		return (ct_entry_descriptor){0};   // Bucket is being written. The retry loop will call us again.
-#else
-	assert(bucket->write_lock_and_seq == 0);
-#endif
-
 	uint32_t header_mask = 0;
 	uint32_t header_values = 0;
 
@@ -496,6 +473,15 @@ ct_entry_descriptor find_entry_in_bucket_by_parent_split_view(ct_bucket_split* b
 	header_mask |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_common_header, parent_color_and_flags));
 	if (is_secondary)
 		header_values |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_common_header, parent_color_and_flags));
+
+
+#ifdef MULTITHREADING
+	uint32_t start_counter = read_int_atomic(&(bucket->write_lock_and_seq));
+	if (start_counter & SEQ_INCREMENT)
+		return (ct_entry_descriptor){0};   // Bucket is being written. The retry loop will call us again.
+#else
+	assert(bucket->write_lock_and_seq == 0);
+#endif
 
 	for (i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
 		read_entry_non_atomic_split_view(&(bucket->common_header_cells[i]), &(bucket->type_specific_cells[i]), &result->header, &result->type_specific);
@@ -792,7 +778,7 @@ void store_path_entry(ct_finger* finger) {
 void store_path_entry_split_view(ct_finger_split* finger) {
 	finger->last_path_entry++;
 	ct_path_entry_split* slot = finger->last_path_entry;
-	copy_as_qwords(&(slot->entry), &(finger->containing_entry), sizeof(finger->containing_entry));
+	memcpy(&(slot->entry), &(finger->containing_entry), sizeof(finger->containing_entry));
 
 	// It is not always the case that hash_to_bucket(finger->prefix_hash) is the
 	// primary bucket of the containing entry, as the finger can descend inside
@@ -1906,8 +1892,6 @@ int add_entry_split_view(ct_lock_mgr_split* lock_mgr,
 	ct_bucket_read_lock_split primary_read_lock, secondary_read_lock;
 	// ct_entry_storage* result;
 	ct_entry_descriptor result;
-	ct_common_header_storage* result_header;
-	ct_type_specific_entry_storage* result_type_specific;
 	uint8_t flags_to_add = 0;
 	uint8_t unused_color;
 	ct_bucket_split* result_bucket = NULL;
@@ -1951,7 +1935,7 @@ int add_entry_split_view(ct_lock_mgr_split* lock_mgr,
 	result_bucket = primary_bucket;
 	alternate_bucket_lock = &secondary_read_lock;
 
-	ret = relocate_entry_split_view(lock_mgr->trie, lock_mgr, primary_bucket_num, immovable_entry_header, &result_header, &result_type_specific);
+	ret = relocate_entry_split_view(lock_mgr->trie, lock_mgr, primary_bucket_num, immovable_entry_header, &result.common_header, &result.type_specific);
 	if (ret == SI_FAIL || ret == SI_RETRY) {
 		release_bucket_lock_split_view(lock_mgr, result_bucket);
 		return ret;
@@ -2178,7 +2162,7 @@ void propagate_max_leaf(ct_finger* finger, ct_path_entry* top_path_pos) {
 void propagate_max_leaf_split_view(ct_finger_split* finger, ct_path_entry_split* top_path_pos) {
 	ct_common_header * parent_header;
 	ct_type_specific_entry * parent_type_specific;
-	ct_path_entry_split* path_pos = finger->last_path_entry;\
+	ct_path_entry_split* path_pos = finger->last_path_entry;
 
 	while (path_pos > top_path_pos) {
 		// Propagate from path[path_pos] to path[path_pos - 1]
@@ -3449,7 +3433,7 @@ int create_leaf_split_view(ct_finger_split* finger, ct_kv* kv, uint64_t next_sym
 #endif
 		linklist_insert_split_view(finger->trie, &pred_locator, new_leaf_header, new_leaf_type_specific, hash_to_bucket(new_leaf_hash));
 		mark_bitmap_child_split_view(finger->trie, &(finger->last_path_entry->entry),
-						  next_symbol, new_leaf_hash, entry_color_common_header(&(finger->containing_entry.header)));
+						  next_symbol, new_leaf_hash, entry_color_common_header((ct_common_header*) new_leaf_header));
 
 		// Marking the child changed the bitmap. Update the finger.
 		reread_path_end_split_view(finger);
@@ -4224,7 +4208,7 @@ int ct_iter_next_internal_split_view(ct_iter_split* iter) {
 	if (entry_type_common_header(&(new_leaf.header)) != TYPE_LEAF)
 		return SI_RETRY;
 
-	copy_as_qwords(&(iter->leaves[0]), &new_leaf, sizeof(new_leaf));
+	memcpy(&(iter->leaves[0]), &new_leaf, sizeof(new_leaf));
 	prefetch_bucket_pair_split_view(iter->trie, new_leaf.type_specific.next_leaf.primary_bucket, new_leaf.type_specific.next_leaf.tag);
 
 	return SI_OK;
