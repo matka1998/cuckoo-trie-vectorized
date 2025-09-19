@@ -22,14 +22,14 @@ static void print_key(ct_kv* kv) {
 
 // Similar to locator_to_entry, but the locator may point to nothing (locator_to_entry
 // enters an infinite loop in this case).
-ct_entry_storage* try_follow_locator(cuckoo_trie* trie, ct_entry_locator* locator) {
-	ct_entry_storage* result;
+ct_entry_descriptor try_follow_locator(cuckoo_trie* trie, ct_entry_locator* locator) {
+	ct_entry_descriptor result;
 	ct_entry_local_copy unused;
 
 	//TODO: can enter infinite loop if locator not found?
 	result = find_entry_in_pair_by_color(trie, &unused, locator->primary_bucket,
 										 locator->tag, locator->color);
-	assert(result);
+	assert(result.common);
 	return result;
 }
 
@@ -47,15 +47,15 @@ char* leaf_locator_error(cuckoo_trie* trie, ct_entry_locator* locator) {
 #ifdef NO_LINKED_LIST
 	return 0;
 #else
-	ct_entry_storage* pointed_entry;
+	ct_entry_descriptor pointed_entry;
 	if (locator->primary_bucket >= trie->num_buckets)
 		return "BUCKET_TOO_LARGE";
 
 	pointed_entry = try_follow_locator(trie, locator);
-	if (!pointed_entry)
+	if (!pointed_entry.common)
 		return "POINTS_TO_NOTHING";
 
-	if (entry_type((ct_entry*) pointed_entry) != TYPE_LEAF)
+	if (entry_type_descriptor(pointed_entry) != TYPE_LEAF)
 		return "POINTS_TO_NON_LEAF";
 
 	return 0;

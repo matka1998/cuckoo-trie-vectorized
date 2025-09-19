@@ -34,23 +34,23 @@
 #define HASH_MULTIPLIER 19
 #endif
 
-uint64_t ptr_to_bucket(cuckoo_trie* trie, ct_entry_storage* entry) {
-	return ((uintptr_t)entry - (uintptr_t)(trie->buckets)) / sizeof(ct_bucket);
+uint64_t ptr_to_bucket(cuckoo_trie* trie, ct_entry_descriptor entry) {
+	return ((uintptr_t)entry.common - (uintptr_t)(trie->buckets)) / sizeof(ct_bucket);
 }
 
 
-uint64_t entry_index_in_bucket(ct_entry_storage* entry) {
+uint64_t entry_index_in_bucket(ct_entry_descriptor entry) {
 	assert(sizeof(ct_bucket) == 64 || sizeof(ct_bucket) == 128);
 
-	// Optimize the common case
-	if (sizeof(ct_entry_storage) == 15)
-		return ((~((uintptr_t)entry)) + 1) & 0xf;
+	// // Optimize the common case
+	// if (sizeof(ct_entry_storage) == 15)
+	// 	return ((~((uintptr_t)entry)) + 1) & 0xf;
 
 	// We assume that buckets are aligned to a multiple of sizeof(ct_bucket)
-	ct_bucket* bucket_start = (ct_bucket*) ( ((uintptr_t)entry) & (~(sizeof(ct_bucket) - 1)) );
-	uint8_t* entries_start = (uint8_t*)(bucket_start->cells);
-	assert((((uint8_t*)entry) - entries_start) % sizeof(ct_entry_storage) == 0);
-	return (((uint8_t*)entry) - entries_start) / sizeof(ct_entry_storage);
+	ct_bucket* bucket_start = (ct_bucket*) ( ((uintptr_t)entry.common) & (~(sizeof(ct_bucket) - 1)) );
+	uint8_t* entries_start = (uint8_t*)(bucket_start->common_cells);
+	assert((((uint8_t*)entry.common) - entries_start) % sizeof(ct_common_header_storage) == 0);
+	return (((uint8_t*)entry.common) - entries_start) / sizeof(ct_common_header_storage);
 }
 
 // Compute the secondary bucket number given the primary
@@ -87,11 +87,11 @@ uint64_t accumulate_hash(cuckoo_trie* trie, uint64_t x, uint64_t symbol) {
 
 // Given that <entry> is currently in bucket <bucket_num>, return the other
 // bucket in which <entry> can be stored.
-uint64_t alternate_bucket(cuckoo_trie* trie, ct_entry_storage* entry, uint64_t bucket_num) {
-	if (entry_is_secondary((ct_entry*) entry))
-		return unmix_bucket(trie, bucket_num, entry_tag((ct_entry*) entry));
+uint64_t alternate_bucket(cuckoo_trie* trie, ct_entry_descriptor entry, uint64_t bucket_num) {
+	if (entry_is_secondary_descriptor(entry))
+		return unmix_bucket(trie, bucket_num, entry_tag_descriptor(entry));
 	else
-		return mix_bucket(trie, bucket_num, entry_tag((ct_entry*) entry));
+		return mix_bucket(trie, bucket_num, entry_tag_descriptor(entry));
 }
 
 uint64_t hash_to_bucket(uint64_t x) {
@@ -102,14 +102,17 @@ uint64_t hash_to_tag(uint64_t x) {
 	return (x & ((1 << TAG_BITS) - 1));
 }
 
-int entries_equal(ct_entry_storage* a, ct_entry_storage* b) {
-	assert(sizeof(ct_entry_storage) <= 16);  // We only compare 2 QWORDS
-	assert(sizeof(ct_entry_storage) >= 8);   // Otherwise we'll compare past the entry's end
-	uint64_t* a1 = (uint64_t*)a;
-	uint64_t* a2 = (uint64_t*)(((uintptr_t)a) + sizeof(ct_entry_storage)-8);
-	uint64_t* b1 = (uint64_t*)b;
-	uint64_t* b2 = (uint64_t*)(((uintptr_t)b) + sizeof(ct_entry_storage)-8);
-	return ((*a1 == *b1) && (*a2 == *b2));
+int entries_equal(ct_entry_descriptor a, ct_entry_descriptor b) {
+	// assert(sizeof(ct_entry_storage) <= 16);  // We only compare 2 QWORDS
+	// assert(sizeof(ct_entry_storage) >= 8);   // Otherwise we'll compare past the entry's end
+
+	return (memcmp(a.common, b.common, sizeof(ct_common_header_storage)) == 0) &&
+	       (memcmp(a.type_specific, b.type_specific, sizeof(ct_type_specific_entry_storage)) == 0);
+	// uint64_t* a1 = (uint64_t*)a;
+	// uint64_t* a2 = (uint64_t*)(((uintptr_t)a) + sizeof(ct_entry_storage)-8);
+	// uint64_t* b1 = (uint64_t*)b;
+	// uint64_t* b2 = (uint64_t*)(((uintptr_t)b) + sizeof(ct_entry_storage)-8);
+	// return ((*a1 == *b1) && (*a2 == *b2));
 }
 
 // Check whether an entry in the trie changed since we first read it
@@ -124,7 +127,7 @@ int validate_entry(ct_entry_local_copy* local_copy) {
 	assert(sizeof(ct_bucket) == 64);
 	ct_entry entry;
 	int equal;
-	ct_bucket* bucket = (ct_bucket*) (((uintptr_t)(local_copy->last_pos)) & (~63));
+	ct_bucket* bucket = (ct_bucket*) (((uintptr_t)(local_copy->last_pos.common)) & (~63));
 	uint64_t bucket_seq = read_int_atomic(&(bucket->write_lock_and_seq));
 	equal = ((bucket_seq & (~0xFF)) == (local_copy->last_seq & (~0xFF)));
 
@@ -137,7 +140,7 @@ int validate_path_from(ct_finger* finger, ct_path_entry* top_path_pos) {
 
 	for (path_pos = top_path_pos; path_pos <= finger->last_path_entry; path_pos++) {
 		ct_entry_local_copy* local_copy = &(path_pos->entry);
-		ct_entry_storage* shared_copy = path_pos->entry.last_pos;
+		ct_entry_descriptor shared_copy = path_pos->entry.last_pos;
 		if (!validate_entry(local_copy))
 			return 0;
 	}
@@ -146,7 +149,7 @@ int validate_path_from(ct_finger* finger, ct_path_entry* top_path_pos) {
 
 void read_min_leaf(cuckoo_trie* trie, ct_entry_local_copy* result) {
 	uint32_t seq;
-	ct_entry_storage* leaf_addr = trie_min_leaf(trie);
+	ct_entry_descriptor leaf_addr = trie_min_leaf(trie);
 	seq = read_entry(leaf_addr, &(result->value));
 	result->last_pos = leaf_addr;
 	result->last_seq = seq;
@@ -157,9 +160,9 @@ uint64_t get_jump_symbol(ct_entry* entry, uint64_t symbol_idx) {
 	assert(MAX_JUMP_BITS <= 64);
 
 	//  Make sure we don't read past the entry's end
-	assert(offsetof(ct_entry, jump_bits) + 8 <= sizeof(ct_entry_storage));
+	// assert(offsetof(ct_entry, jump_bits) + 8 <= sizeof(ct_entry_storage));
 
-	uint64_t jump_bits = *((uint64_t*) &(entry->jump_bits[0]));
+	uint64_t jump_bits = *((uint64_t*) &(entry->type_specific.jump_bits[0]));
 	jump_bits = __builtin_bswap64(jump_bits);
 	return ((jump_bits >> (64 - BITS_PER_SYMBOL - BITS_PER_SYMBOL * symbol_idx)) & SYMBOL_MASK) + 1;
 }
@@ -203,57 +206,66 @@ void prefetch_bucket_pair(cuckoo_trie* trie, uint64_t primary_bucket, uint8_t ta
 	}
 }
 
-ct_entry_storage* find_entry_in_bucket_by_color(ct_bucket* bucket,
+ct_entry_descriptor find_entry_in_bucket_by_color(ct_bucket* bucket,
 												ct_entry_local_copy* result, uint64_t is_secondary,
 												uint64_t tag, uint64_t color) {
 	int i;
 	uint64_t header_mask = 0;
 	uint64_t header_values = 0;
 
-	header_mask |= ((1ULL << TAG_BITS) - 1) << (8*offsetof(ct_entry, color_and_tag));
-	header_values |= tag << (8*offsetof(ct_entry, color_and_tag));
+	header_mask |= ((1ULL << TAG_BITS) - 1) << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, color_and_tag)));
+	header_values |= tag << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, color_and_tag)));
 
-	header_mask |= ((uint64_t)((0xFF << TAG_BITS) & 0xFF)) << (8*offsetof(ct_entry, color_and_tag));
-	header_values |= color << (8*offsetof(ct_entry, color_and_tag) + TAG_BITS);
+	header_mask |= ((uint64_t)((0xFF << TAG_BITS) & 0xFF)) << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, color_and_tag)));
+	header_values |= color << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, color_and_tag)) + TAG_BITS);
 
-	header_mask |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
+	header_mask |= FLAG_SECONDARY_BUCKET << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, parent_color_and_flags)));
 	if (is_secondary)
-		header_values |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
+		header_values |= FLAG_SECONDARY_BUCKET << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, parent_color_and_flags)));
 
 #ifdef MULTITHREADING
 	uint32_t start_counter = read_int_atomic(&(bucket->write_lock_and_seq));
 	if (start_counter & SEQ_INCREMENT)
-		return NULL;   // Bucket is being written. The retry loop will call us again.
+		return (ct_entry_descriptor){0};   // Bucket is being written. The retry loop will call us again.
 #else
 	assert(bucket->write_lock_and_seq == 0);
 #endif
 
 	for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
-		read_entry_non_atomic(&(bucket->cells[i]), &(result->value));
+		ct_entry_descriptor entry = {
+			.common = (ct_common_header*) (&(bucket->common_cells[i])),
+			.type_specific = (ct_type_specific_entry*) (&(bucket->type_specific_cells[i]))
+		};
+		read_entry_non_atomic(entry, &(result->value));
 
 		uint64_t header = *((uint64_t*) (&(result->value)));
 		if ((header & header_mask) == header_values)
 			break;
 	}
 	if (i == CUCKOO_BUCKET_SIZE)
-		return NULL;
+		return (ct_entry_descriptor){0};
 
 #ifdef MULTITHREADING
 	if (read_int_atomic(&(bucket->write_lock_and_seq)) != start_counter) {
 		// The bucket changed while we read it. We rely on the retry loop in
 		// find_entry_in_pair_by_color to call us again
-		return NULL;
+		return (ct_entry_descriptor){0};
 	}
 	result->last_seq = start_counter;
 #endif
 
-	result->last_pos = &(bucket->cells[i]);
-	if (!result->last_pos)
+
+
+	result->last_pos = (ct_entry_descriptor){
+		.common = (ct_common_header*) (&(bucket->common_cells[i])),
+		.type_specific = (ct_type_specific_entry*) (&(bucket->type_specific_cells[i]))
+	};
+	if (!result->last_pos.common)
 		__builtin_unreachable();
 	return result->last_pos;
 }
 
-ct_entry_storage* find_entry_in_bucket_by_parent(ct_bucket* bucket,
+ct_entry_descriptor find_entry_in_bucket_by_parent(ct_bucket* bucket,
 												 ct_entry_local_copy* result, uint64_t is_secondary,
 												 uint64_t tag, uint64_t last_symbol, uint64_t parent_color) {
 	int i;
@@ -261,30 +273,34 @@ ct_entry_storage* find_entry_in_bucket_by_parent(ct_bucket* bucket,
 	uint64_t header_mask = 0;
 	uint64_t header_values = 0;
 
-	header_mask |= ((1ULL << TAG_BITS) - 1) << (8*offsetof(ct_entry, color_and_tag));
-	header_values |= tag << (8*offsetof(ct_entry, color_and_tag));
+	header_mask |= ((1ULL << TAG_BITS) - 1) << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, color_and_tag)));
+	header_values |= tag << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, color_and_tag)));
 
-	header_mask |= 0xFFULL << (8*offsetof(ct_entry, last_symbol));
-	header_values |= last_symbol << (8*offsetof(ct_entry, last_symbol));
+	header_mask |= 0xFFULL << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, last_symbol)));
+	header_values |= last_symbol << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, last_symbol)));
 
 	const uint64_t parent_color_mask = (0xFFULL << PARENT_COLOR_SHIFT) & 0xFF;
-	header_mask |= parent_color_mask << (8*offsetof(ct_entry, parent_color_and_flags));
-	header_values |= parent_color << (8*offsetof(ct_entry, parent_color_and_flags) + PARENT_COLOR_SHIFT);
+	header_mask |= parent_color_mask << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, parent_color_and_flags)));
+	header_values |= parent_color << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, parent_color_and_flags)) + PARENT_COLOR_SHIFT);
 
-	header_mask |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
+	header_mask |= FLAG_SECONDARY_BUCKET << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, parent_color_and_flags)));
 	if (is_secondary)
-		header_values |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
+		header_values |= FLAG_SECONDARY_BUCKET << (8*(offsetof(ct_entry, common) + offsetof(ct_common_header, parent_color_and_flags)));
 
 #ifdef MULTITHREADING
 	uint32_t start_counter = read_int_atomic(&(bucket->write_lock_and_seq));
 	if (start_counter & SEQ_INCREMENT)
-		return NULL;   // Bucket is being written. The retry loop will call us again.
+		return (ct_entry_descriptor){0};   // Bucket is being written. The retry loop will call us again.
 #else
 	assert(bucket->write_lock_and_seq == 0);
 #endif
 
 	for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
-		read_entry_non_atomic(&(bucket->cells[i]), &(result->value));
+		ct_entry_descriptor entry = {
+			.common = (ct_common_header*) (&(bucket->common_cells[i])),
+			.type_specific = (ct_type_specific_entry*) (&(bucket->type_specific_cells[i]))
+		};
+		read_entry_non_atomic(entry, &(result->value));
 
 		uint64_t header = *((uint64_t*) (&(result->value)));
 		if ((header & header_mask) == header_values) {
@@ -294,20 +310,23 @@ ct_entry_storage* find_entry_in_bucket_by_parent(ct_bucket* bucket,
 	}
 
 	if (i == CUCKOO_BUCKET_SIZE) {
-		return NULL;
+		return (ct_entry_descriptor){0};
 	}
 
 #ifdef MULTITHREADING
 	if (read_int_atomic(&(bucket->write_lock_and_seq)) != start_counter) {
 		// The bucket changed while we read it. We rely on the retry loop in
 		// find_entry_in_pair_by_parent to call us again
-		return NULL;
+		return (ct_entry_descriptor){0};
 	}
 	result->last_seq = start_counter;
 #endif
 
-	result->last_pos = &(bucket->cells[i]);
-	if (!result->last_pos)
+	result->last_pos = (ct_entry_descriptor){
+		.common = (ct_common_header*) (&(bucket->common_cells[i])),
+		.type_specific = (ct_type_specific_entry*) (&(bucket->type_specific_cells[i]))
+	};
+	if (!result->last_pos.common)
 		__builtin_unreachable();
 	return result->last_pos;
 }
@@ -316,20 +335,20 @@ ct_entry_storage* find_entry_in_bucket_by_parent(ct_bucket* bucket,
 // found to <result> and also returns its address. Assumes the entry is in the pair.
 // Note: When multithreading, the returned address is meaningless, as the entry might
 //       have been moved since it was read. Use only the value written into <result>
-ct_entry_storage* find_entry_in_pair_by_color(cuckoo_trie* trie, ct_entry_local_copy* result,
+ct_entry_descriptor find_entry_in_pair_by_color(cuckoo_trie* trie, ct_entry_local_copy* result,
 											  uint64_t primary_bucket, uint64_t tag,
 											  uint8_t color) {
-	ct_entry_storage* entry_addr;
+	ct_entry_descriptor entry_addr;
 	uint64_t count = 0;
 
 	while (1) {
 		entry_addr = find_entry_in_bucket_by_color(&(trie->buckets[primary_bucket]), result, 0, tag, color);
-		if (entry_addr)
+		if (entry_addr.common)
 			break;
 
 		uint64_t secondary_bucket = mix_bucket(trie, primary_bucket, tag);
 		entry_addr = find_entry_in_bucket_by_color(&(trie->buckets[secondary_bucket]), result, 1, tag, color);
-		if (entry_addr)
+		if (entry_addr.common)
 			break;
 
 		// The entry might have been relocated from the secondary to the primary bucket
@@ -345,22 +364,22 @@ ct_entry_storage* find_entry_in_pair_by_color(cuckoo_trie* trie, ct_entry_local_
 
 // Assumes the entry is in the pair
 inline
-ct_entry_storage* find_entry_in_pair_by_parent(cuckoo_trie* trie, ct_entry_local_copy* result,
+ct_entry_descriptor find_entry_in_pair_by_parent(cuckoo_trie* trie, ct_entry_local_copy* result,
 											   uint64_t primary_bucket, uint64_t tag,
 											   uint64_t last_symbol, uint64_t parent_color) {
-	ct_entry_storage* entry_addr;
+	ct_entry_descriptor entry_addr;
 	uint64_t count = 0;
 
 	while (1) {
 		entry_addr = find_entry_in_bucket_by_parent(&(trie->buckets[primary_bucket]), result, 0, tag,
 													last_symbol, parent_color);
-		if (entry_addr)
+		if (entry_addr.common)
 			break;
 
 		uint64_t secondary_bucket_num = mix_bucket(trie, primary_bucket, tag);
 		entry_addr = find_entry_in_bucket_by_parent(&(trie->buckets[secondary_bucket_num]), result, 1, tag,
 													last_symbol, parent_color);
-		if (entry_addr)
+		if (entry_addr.common)
 			break;
 
 		count++;
@@ -371,21 +390,28 @@ ct_entry_storage* find_entry_in_pair_by_parent(cuckoo_trie* trie, ct_entry_local
 	return entry_addr;
 }
 
-ct_entry_storage* find_free_cell_in_bucket(ct_bucket* bucket) {
+ct_entry_descriptor find_free_cell_in_bucket(ct_bucket* bucket) {
 	int i;
 
 	for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
-		ct_entry_storage* entry = &(bucket->cells[i]);
-		if (entry_type((ct_entry*) entry) == TYPE_UNUSED)
+		ct_entry_descriptor entry = {
+			.common = &(bucket->common_cells[i]),
+			.type_specific = &(bucket->type_specific_cells[i])
+		};
+
+		if (entry_type_descriptor(entry) == TYPE_UNUSED)
 			return entry;
 	}
 
-	return NULL;
+	return (ct_entry_descriptor){NULL, NULL};
 }
 
-ct_entry_storage* find_root(cuckoo_trie* trie, ct_entry_local_copy* result) {
+ct_entry_descriptor find_root(cuckoo_trie* trie, ct_entry_local_copy* result) {
 	uint64_t root_primary_bucket = hash_to_bucket(HASH_START_VALUE);
-	ct_entry_storage* root_pos = &(trie->buckets[root_primary_bucket].cells[0]);
+	ct_entry_descriptor root_pos = {
+		.common = &(trie->buckets[root_primary_bucket].common_cells[0]),
+		.type_specific = &(trie->buckets[root_primary_bucket].type_specific_cells[0])
+	};
 	result->last_seq = read_entry(root_pos, &(result->value));
 	result->last_pos = root_pos;
 	result->primary_bucket = root_primary_bucket;
@@ -393,11 +419,11 @@ ct_entry_storage* find_root(cuckoo_trie* trie, ct_entry_local_copy* result) {
 }
 
 void locator_to_entry(cuckoo_trie* trie, ct_entry_locator* locator, ct_entry_local_copy* result) {
-	ct_entry_storage* addr;
+	ct_entry_descriptor addr;
 	addr = find_entry_in_pair_by_color(trie, result,
 									   locator->primary_bucket,
 									   locator->tag, locator->color);
-	assert(addr);
+	assert(addr.common);
 }
 
 void store_path_entry(ct_finger* finger) {
@@ -416,7 +442,7 @@ void store_path_entry(ct_finger* finger) {
 
 // Handle the case where the entry was relocated since we read it, and has to be found again
 void update_entry_slow_path(cuckoo_trie* trie, ct_entry_local_copy* local_copy, ct_entry* new_value) {
-	ct_entry_storage* cur_entry_pos;
+	ct_entry_descriptor cur_entry_pos;
 	ct_entry_local_copy unused;
 	ct_entry adjusted_new_value;
 	uint32_t new_seq;
@@ -427,8 +453,8 @@ void update_entry_slow_path(cuckoo_trie* trie, ct_entry_local_copy* local_copy, 
 	// The entry might have been relocated since the local copy was read. Write the new
 	// value with a FLAG_SECONDARY_BUCKET according to its current location.
 	adjusted_new_value = *new_value;
-	adjusted_new_value.parent_color_and_flags &= ~FLAG_SECONDARY_BUCKET;
-	adjusted_new_value.parent_color_and_flags |= ((ct_entry*) cur_entry_pos)->parent_color_and_flags & FLAG_SECONDARY_BUCKET;
+	adjusted_new_value.common.parent_color_and_flags &= ~FLAG_SECONDARY_BUCKET;
+	adjusted_new_value.common.parent_color_and_flags |= cur_entry_pos.common->parent_color_and_flags & FLAG_SECONDARY_BUCKET;
 	new_seq = write_entry(cur_entry_pos, &(adjusted_new_value));
 	local_copy->value = adjusted_new_value;
 	local_copy->last_pos = cur_entry_pos;
@@ -460,10 +486,10 @@ void update_entry(cuckoo_trie* trie, ct_entry_local_copy* local_copy, ct_entry* 
 	update_entry_slow_path(trie, local_copy, new_value);
 }
 
-void remove_entry_by_address(ct_lock_mgr* lock_mgr, ct_entry_storage* entry_pos) {
+void remove_entry_by_address(ct_lock_mgr* lock_mgr, ct_entry_descriptor entry_pos) {
 	const ct_entry unused_entry = {
-		.parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_UNUSED,
-		.color_and_tag = INVALID_COLOR << TAG_BITS
+		.common.parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_UNUSED,
+		.common.color_and_tag = INVALID_COLOR << TAG_BITS
 	};
 
 #ifdef NDEBUG
@@ -477,12 +503,12 @@ void remove_entry_by_address(ct_lock_mgr* lock_mgr, ct_entry_storage* entry_pos)
 
 void remove_entry_by_value(ct_lock_mgr* lock_mgr, ct_entry* entry, uint64_t prefix_hash) {
 	ct_entry_local_copy unused;
-	ct_entry_storage* entry_pos = find_entry_in_pair_by_color(lock_mgr->trie,
+	ct_entry_descriptor entry_pos = find_entry_in_pair_by_color(lock_mgr->trie,
 															  &unused,
 															  hash_to_bucket(prefix_hash),
 															  hash_to_tag(prefix_hash),
 															  entry_color(entry));
-	assert(entry_pos);
+	assert(entry_pos.common);
 
 	remove_entry_by_address(lock_mgr, entry_pos);
 }
@@ -499,11 +525,11 @@ void mark_entry_clean(cuckoo_trie* trie, ct_entry_local_copy* local_copy) {
 	update_entry(trie, local_copy, &new_value);
 }
 
-ct_entry_storage* init_finger(ct_finger* finger, cuckoo_trie* trie) {
-	ct_entry_storage* root_addr;
+ct_entry_descriptor init_finger(ct_finger* finger, cuckoo_trie* trie) {
+	ct_entry_descriptor root_addr;
 
 	if (read_int_atomic(&(trie->is_empty)))
-		root_addr = NULL;
+		root_addr = (ct_entry_descriptor){0};
 	else {
 		root_addr = find_root(trie, &(finger->containing_entry));
 	}
@@ -556,10 +582,10 @@ int create_root(ct_finger* finger, ct_kv* kv) {
 	ct_bucket* root_primary_bucket = &(finger->trie->buckets[primary_bucket_num]);
 
 	// We're inserting the first kv into the trie, so the root is a leaf
-	root.parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_LEAF;
-	root.color_and_tag = (ROOT_COLOR << TAG_BITS) | tag;
+	root.common.parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_LEAF;
+	root.common.color_and_tag = (ROOT_COLOR << TAG_BITS) | tag;
 	entry_set_kv(&root, kv);
-	root.next_leaf.primary_bucket = -1;  // This leaf is, currently, the maximal one
+	root.type_specific.next_leaf.primary_bucket = -1;  // This leaf is, currently, the maximal one
 
 	// Lock the root's bucket so no other thread tries to create the root simultaneously.
 	lock = write_lock_bucket(&(finger->lock_mgr), root_primary_bucket);
@@ -576,11 +602,13 @@ int create_root(ct_finger* finger, ct_kv* kv) {
 		release_all_locks(&(finger->lock_mgr));
 		return SI_EXISTS;
 	}
-	write_entry(&(root_primary_bucket->cells[0]), &root);
 
-	((ct_entry*) trie_min_leaf(finger->trie))->next_leaf.primary_bucket = primary_bucket_num;
-	((ct_entry*) trie_min_leaf(finger->trie))->next_leaf.tag = tag;
-	((ct_entry*) trie_min_leaf(finger->trie))->next_leaf.color = ROOT_COLOR;
+	write_entry((ct_entry_descriptor){.common = &(root_primary_bucket->common_cells[0]),
+						.type_specific = &(root_primary_bucket->type_specific_cells[0])}, &root);
+
+	trie_min_leaf(finger->trie).type_specific->next_leaf.primary_bucket = primary_bucket_num;
+	trie_min_leaf(finger->trie).type_specific->next_leaf.tag = tag;
+	trie_min_leaf(finger->trie).type_specific->next_leaf.color = ROOT_COLOR;
 
 	// Make sure the root is completely set-up before allowing readers to look at it
 	write_int_atomic(&(finger->trie->is_empty),0);
@@ -590,7 +618,7 @@ int create_root(ct_finger* finger, ct_kv* kv) {
 
 uint64_t bitmap_child_before(ct_entry* bitmap_node, uint64_t symbol) {
 	assert(SYMBOL_END == 0);
-	return last_bit_before(bitmap_node->child_bitmap, symbol);
+	return last_bit_before(bitmap_node->type_specific.child_bitmap, symbol);
 }
 
 int upgrade_locks_on_left_parents_above(ct_finger* finger, ct_path_entry* bitmap_path_pos) {
@@ -599,13 +627,13 @@ int upgrade_locks_on_left_parents_above(ct_finger* finger, ct_path_entry* bitmap
 	int result = SI_OK;
 
 	while (path_pos > &(finger->path[0])) {
-		uint64_t backtrack_symbol = path_pos->entry.value.last_symbol;
+		uint64_t backtrack_symbol = path_pos->entry.value.common.last_symbol;
 		ct_entry_local_copy* parent = &((path_pos - 1)->entry);
 		if (entry_type(&(parent->value)) == TYPE_JUMP) {
 			result = upgrade_lock(&(finger->lock_mgr), parent);
 		} else {
 			assert(entry_type(&(parent->value)) == TYPE_BITMAP);
-			if (backtrack_symbol != parent->value.max_child)
+			if (backtrack_symbol != parent->value.type_specific.max_child)
 				break;  // We reached a node where we're not maximal
 			result = upgrade_lock(&(finger->lock_mgr), parent);
 		}
@@ -654,7 +682,7 @@ int get_predecessor_atomic(cuckoo_trie* trie, ct_pred_locator* pred_locator, ct_
 		return 1;
 	}
 
-	locator_to_entry(trie, &(subtree_root.value.max_leaf), result);
+	locator_to_entry(trie, &(subtree_root.value.type_specific.max_leaf), result);
 	if (entry_type(&(result->value)) != TYPE_LEAF) {
 		// Failure - more keys were added under the subtree max leaf since we read it
 		return 0;
@@ -673,7 +701,7 @@ int get_predecessor_atomic(cuckoo_trie* trie, ct_pred_locator* pred_locator, ct_
 
 // Find the predecessor described by pred_locator
 void find_predecessor(cuckoo_trie* trie, ct_pred_locator* pred_locator) {
-	ct_entry_storage* subtree_root;
+	ct_entry_descriptor subtree_root;
 
 	if (pred_locator->subtree[0].primary_bucket == -1ULL) {
 		// The key is minimal - the predecessor is the linklist head
@@ -692,23 +720,23 @@ void find_predecessor(cuckoo_trie* trie, ct_pred_locator* pred_locator) {
 		return;
 
 	// The subtree root is a bitmap / jump node, so the predecessor is tha maximal leaf under it
-	locator_to_entry(trie, &(pred_locator->predecessor[0].value.max_leaf), &(pred_locator->predecessor[0]));
+	locator_to_entry(trie, &(pred_locator->predecessor[0].value.type_specific.max_leaf), &(pred_locator->predecessor[0]));
 	assert(entry_type(&(pred_locator->predecessor[0].value)) == TYPE_LEAF);
 }
 
 // Insert <new_entry> just after <predecessor> in the linked list. The <next> field of
 // <new_entry> should already be set to the correct value
 void linklist_insert(cuckoo_trie* trie, ct_pred_locator* pred_locator,
-					 ct_entry_storage* new_entry, uint64_t primary_bucket) {
+					 ct_entry_descriptor new_entry, uint64_t primary_bucket) {
 #ifndef NO_LINKED_LIST
 	ct_entry_locator new_entry_locator;
 	ct_entry new_prev;
 	new_entry_locator.primary_bucket = primary_bucket;
-	new_entry_locator.color = entry_color((ct_entry*) new_entry);
-	new_entry_locator.tag = entry_tag((ct_entry*) new_entry);
+	new_entry_locator.color = entry_color_descriptor(new_entry);
+	new_entry_locator.tag = entry_tag_descriptor(new_entry);
 
 	new_prev = pred_locator->predecessor[0].value;
-	new_prev.next_leaf = new_entry_locator;
+	new_prev.type_specific.next_leaf = new_entry_locator;
 	update_entry(trie, &(pred_locator->predecessor[0]), &new_prev);
 #endif
 }
@@ -727,7 +755,7 @@ void linklist_insert_two(cuckoo_trie* trie, ct_pred_locator* pred_locator,
 
 	// Connect the prev to the first entry
 	new_prev = pred_locator->predecessor[0].value;
-	new_prev.next_leaf = first_entry_locator;
+	new_prev.type_specific.next_leaf = first_entry_locator;
 	update_entry(trie, &(pred_locator->predecessor[0]), &new_prev);
 #endif
 }
@@ -736,8 +764,8 @@ void extend_jump_node(ct_entry* jump_node, uint64_t symbol) {
 	assert(symbol != SYMBOL_END);  // The END symbol should never appear in jumps
 	uint64_t offset = entry_jump_size(jump_node) * BITS_PER_SYMBOL;
 
-	put_bits(jump_node->jump_bits, offset, BITS_PER_SYMBOL, symbol - 1);
-	jump_node->child_color_and_jump_size++;
+	put_bits(jump_node->type_specific.jump_bits, offset, BITS_PER_SYMBOL, symbol - 1);
+	jump_node->type_specific.child_color_and_jump_size++;
 }
 
 uint8_t unused_color_in_pair(ct_bucket* bucket1, ct_bucket* bucket2) {
@@ -746,13 +774,19 @@ uint8_t unused_color_in_pair(ct_bucket* bucket1, ct_bucket* bucket2) {
 	int i;
 
 	for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
-		ct_entry_storage* entry = &(bucket1->cells[i]);
+		ct_entry_descriptor entry = {
+			.common = &(bucket1->common_cells[i]),
+			.type_specific = &(bucket1->type_specific_cells[i])
+		};
 
 		// Turn on the bit corresponding to the entry's color.
-		used_colors |= 1ULL << entry_color((ct_entry*) entry);
+		used_colors |= 1ULL << entry_color_descriptor(entry);
 
-		entry = &(bucket2->cells[i]);
-		used_colors |= 1ULL << entry_color((ct_entry*) entry);
+		entry = (ct_entry_descriptor){
+			.common = &(bucket2->common_cells[i]),
+			.type_specific = &(bucket2->type_specific_cells[i])
+		};
+		used_colors |= 1ULL << entry_color_descriptor(entry);
 	}
 
 	const uint64_t all_valid_colors = (1ULL << (MAX_VALID_COLOR + 1)) - 1;
@@ -772,14 +806,15 @@ typedef struct {
 // Relocate an entry from bucket <bucket_num> to create a free cell in it.
 // Immovable entry - an entry that should not be moved while relocating
 int relocate_entry(cuckoo_trie* trie, ct_lock_mgr* lock_mgr, uint64_t bucket_num,
-				   ct_entry_storage* immovable_entry, ct_entry_storage** output) {
+				   ct_entry_descriptor immovable_entry, ct_entry_descriptor* output) {
 	int i, j;
 	int ret;
 	int return_value = SI_OK;
 	relocation_queue_entry queue[RELOCATE_QUEUE_SIZE];
-	ct_entry_storage* free_cell;
-	ct_entry_storage* occupied_cell;
-	ct_entry_storage* root = &(trie->buckets[hash_to_bucket(HASH_START_VALUE)].cells[0]);
+	ct_entry_descriptor free_cell;
+	ct_entry_descriptor occupied_cell;
+	ct_entry_descriptor root = {.common = &trie->buckets[hash_to_bucket(HASH_START_VALUE)].common_cells[0],
+								.type_specific = &trie->buckets[hash_to_bucket(HASH_START_VALUE)].type_specific_cells[0]};
 	ct_bucket_read_lock read_lock;
 	int free_cell_found = 0;
 	int queue_pos = 0;
@@ -799,12 +834,13 @@ int relocate_entry(cuckoo_trie* trie, ct_lock_mgr* lock_mgr, uint64_t bucket_num
 		// in it.
 
 		for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
-			ct_entry_storage* entry = &(trie->buckets[queue[queue_pos].bucket].cells[i]);
+			ct_entry_descriptor entry = { .common = &(trie->buckets[queue[queue_pos].bucket].common_cells[i]),
+										 .type_specific = &(trie->buckets[queue[queue_pos].bucket].type_specific_cells[i]) };
 
-			if (entry == immovable_entry)
+			if (entry.common == immovable_entry.common)
 				continue;
 
-			if (entry == root)
+			if (entry.common == root.common)
 				continue;
 
 			child_bucket_num = alternate_bucket(trie, entry, queue[queue_pos].bucket);
@@ -822,7 +858,7 @@ int relocate_entry(cuckoo_trie* trie, ct_lock_mgr* lock_mgr, uint64_t bucket_num
 			read_lock_bucket(&(trie->buckets[child_bucket_num]), &read_lock);
 			free_cell = find_free_cell_in_bucket(&(trie->buckets[child_bucket_num]));
 
-			if (free_cell == NULL) {
+			if (free_cell.common == NULL) {
 				// The alternate bucket has no free cells. Put it in the queue for later.
 				if (queue_size < RELOCATE_QUEUE_SIZE) {
 					queue[queue_size].bucket = child_bucket_num;
@@ -869,12 +905,16 @@ int relocate_entry(cuckoo_trie* trie, ct_lock_mgr* lock_mgr, uint64_t bucket_num
 	ct_entry entry_buf;
 	occupied_queue_pos = queue_pos - 1;
 	while (1) {
-		occupied_cell = &(trie->buckets[queue[occupied_queue_pos].bucket].cells[child_idx]);
+		occupied_cell = (ct_entry_descriptor){
+			.common = &(trie->buckets[queue[occupied_queue_pos].bucket].common_cells[queue[occupied_queue_pos].child_idx]),
+			.type_specific = &(trie->buckets[queue[occupied_queue_pos].bucket].type_specific_cells[queue[occupied_queue_pos].child_idx])
+		};
+		// occupied_cell = &(trie->buckets[queue[occupied_queue_pos].bucket].cells[child_idx]);
 
 		// The read here is non-atomic, but that's fine as the bucket is write-locked
 		debug_log("relocate_entry: Moving %p -> %p\n", occupied_cell, free_cell);
 		read_entry_non_atomic(occupied_cell, &entry_buf);
-		entry_buf.parent_color_and_flags ^= FLAG_SECONDARY_BUCKET;
+		entry_buf.common.parent_color_and_flags ^= FLAG_SECONDARY_BUCKET;
 		write_entry(free_cell, &entry_buf);
 		move_entry_lock(lock_mgr, free_cell, occupied_cell);
 
@@ -887,8 +927,8 @@ int relocate_entry(cuckoo_trie* trie, ct_lock_mgr* lock_mgr, uint64_t bucket_num
 	}
 
 	// Mark the cell we freed as empty
-	entry_buf.parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_UNUSED;
-	entry_buf.color_and_tag = INVALID_COLOR << TAG_BITS;
+	entry_buf.common.parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_UNUSED;
+	entry_buf.common.color_and_tag = INVALID_COLOR << TAG_BITS;
 	write_entry(occupied_cell, &entry_buf);
 
 	// Release write locks
@@ -916,12 +956,12 @@ release_locks:
 // to the correct values. Everything else should be set by the caller.
 int add_entry(ct_lock_mgr* lock_mgr,
 			  uint64_t prefix_hash, ct_entry* entry,
-			  ct_entry_storage* immovable_entry, ct_entry_storage** new_entry,
+			  ct_entry_descriptor immovable_entry, ct_entry_descriptor* new_entry,
 			  int lock) {
 	int ret;
 	ct_bucket_write_lock* bucket_lock;
 	ct_bucket_read_lock primary_read_lock, secondary_read_lock;
-	ct_entry_storage* result;
+	ct_entry_descriptor result;
 	uint8_t flags_to_add = 0;
 	uint8_t unused_color;
 	ct_bucket* result_bucket = NULL;
@@ -935,7 +975,7 @@ int add_entry(ct_lock_mgr* lock_mgr,
 	read_lock_bucket(secondary_bucket, &secondary_read_lock);
 
 	result = find_free_cell_in_bucket(primary_bucket);
-	if (result) {
+	if (result.common) {
 		// We'll write to the primary bucket, lock it.
 		ret = upgrade_bucket_lock(lock_mgr, &primary_read_lock);
 		if (ret == SI_RETRY)
@@ -946,7 +986,7 @@ int add_entry(ct_lock_mgr* lock_mgr,
 	}
 
 	result = find_free_cell_in_bucket(secondary_bucket);
-	if (result) {
+	if (result.common) {
 		flags_to_add = FLAG_SECONDARY_BUCKET;
 
 		// We'll write to the secondary bucket
@@ -1020,7 +1060,7 @@ int try_descend(ct_finger* finger, uint64_t symbol, int save_path, uint64_t expe
 		return 1;
 	} else {
 		// The finger is inside a bitmap node
-		if (!get_bit(containing_entry->child_bitmap, symbol))
+		if (!get_bit(containing_entry->type_specific.child_bitmap, symbol))
 			return 0;    // The bitmap doesn't have the requested child
 
 		finger_extend_prefix_known_hash(finger, symbol, expected_hash);
@@ -1037,15 +1077,15 @@ int try_descend(ct_finger* finger, uint64_t symbol, int save_path, uint64_t expe
 // Create a leaf that is a child of the bitmap pointed by the finger and contains the given key
 // Doesn't update the bitmap
 uint64_t create_bitmap_child(ct_finger* finger, uint8_t bitmap_color,
-									  uint64_t symbol, ct_kv* kv, ct_entry_storage** child_addr) {
+									  uint64_t symbol, ct_kv* kv, ct_entry_descriptor* child_addr) {
 	uint64_t child_prefix_hash;
 	ct_entry child;
-	ct_entry_storage* bitmap_in_trie = finger->containing_entry.last_pos;
+	ct_entry_descriptor bitmap_in_trie = finger->containing_entry.last_pos;
 
 	child_prefix_hash = accumulate_hash(finger->trie, finger->prefix_hash, symbol);
 
-	child.parent_color_and_flags = (bitmap_color << PARENT_COLOR_SHIFT) | TYPE_LEAF;
-	child.last_symbol = symbol;
+	child.common.parent_color_and_flags = (bitmap_color << PARENT_COLOR_SHIFT) | TYPE_LEAF;
+	child.common.last_symbol = symbol;
 	entry_set_kv(&child, kv);
 	uint64_t ret = add_entry(&(finger->lock_mgr),
 							 child_prefix_hash,
@@ -1060,11 +1100,11 @@ void mark_bitmap_child(cuckoo_trie* trie, ct_entry_local_copy* bitmap_local_copy
 					   uint64_t symbol, uint64_t child_prefix_hash, uint8_t child_color) {
 	ct_entry new_bitmap = bitmap_local_copy->value;
 	entry_set_child_bit(&new_bitmap, symbol);
-	if (bitmap_local_copy->value.max_child < symbol) {
-		new_bitmap.max_child = symbol;
-		new_bitmap.max_leaf.primary_bucket = hash_to_bucket(child_prefix_hash);
-		new_bitmap.max_leaf.tag = hash_to_tag(child_prefix_hash);
-		new_bitmap.max_leaf.color = child_color;
+	if (bitmap_local_copy->value.type_specific.max_child < symbol) {
+		new_bitmap.type_specific.max_child = symbol;
+		new_bitmap.type_specific.max_leaf.primary_bucket = hash_to_bucket(child_prefix_hash);
+		new_bitmap.type_specific.max_leaf.tag = hash_to_tag(child_prefix_hash);
+		new_bitmap.type_specific.max_leaf.color = child_color;
 	}
 	update_entry(trie, bitmap_local_copy, &new_bitmap);
 }
@@ -1084,13 +1124,13 @@ void propagate_max_leaf(ct_finger* finger, ct_path_entry* top_path_pos) {
 
 		// If we're coming from a non-maximal child, we're done.
 		if (entry_type(parent) == TYPE_BITMAP) {
-			if (child_path_entry->entry.value.last_symbol < parent->max_child)
+			if (child_path_entry->entry.value.common.last_symbol < parent->type_specific.max_child)
 				break;
 		}
 
 		// Propagate
 		ct_entry new_parent = *parent;
-		new_parent.max_leaf = child_path_entry->entry.value.max_leaf;
+		new_parent.type_specific.max_leaf = child_path_entry->entry.value.type_specific.max_leaf;
 		update_entry(finger->trie, &(parent_path_entry->entry), &new_parent);
 
 		path_pos--;
@@ -1123,7 +1163,7 @@ void find_left_descend(ct_finger* finger, ct_path_entry* path_pos, uint64_t symb
 		while (path_pos >= &(finger->path[0])) {
 			entry = &(path_pos->entry.value);
 			if (entry_type(entry) == TYPE_BITMAP) {
-				backtrack_symbol = (path_pos + 1)->entry.value.last_symbol;
+				backtrack_symbol = (path_pos + 1)->entry.value.common.last_symbol;
 				break;
 			}
 			path_pos--;
@@ -1228,14 +1268,14 @@ int split_leaf(ct_finger* finger, ct_kv* kv, int is_maximal, ct_pred_locator* pr
 	ct_kv* maximal_kv;
 	ct_entry minimal_leaf_content;
 	ct_entry maximal_leaf_content;
-	ct_entry_storage* minimal_leaf = NULL;
-	ct_entry_storage* maximal_leaf = NULL;
+	ct_entry_descriptor minimal_leaf = {0};
+	ct_entry_descriptor maximal_leaf = {0};
 	uint8_t maximal_leaf_color;
 	uint8_t minimal_leaf_color;
 	uint8_t maximal_leaf_tag;
 	ct_kv* existing_kv = entry_kv(&(finger->containing_entry.value));
 	ct_entry* cur_jump_node = NULL;
-	ct_entry_locator original_leaf_next = finger->containing_entry.value.next_leaf;
+	ct_entry_locator original_leaf_next = finger->containing_entry.value.type_specific.next_leaf;
 
 	// Take all required locks
 
@@ -1285,10 +1325,10 @@ int split_leaf(ct_finger* finger, ct_kv* kv, int is_maximal, ct_pred_locator* pr
 
 			// Set the parent color to INVALID_COLOR. The parent color of
 			// the first jump will be overwritten later
-			cur_jump_node->parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_JUMP;
-			cur_jump_node->last_symbol = last_symbol;
-			cur_jump_node->color_and_tag = hash_to_tag(prefix_hash);
-			cur_jump_node->child_color_and_jump_size = 0;
+			cur_jump_node->common.parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_JUMP;
+			cur_jump_node->common.last_symbol = last_symbol;
+			cur_jump_node->common.color_and_tag = hash_to_tag(prefix_hash);
+			cur_jump_node->type_specific.child_color_and_jump_size = 0;
 			num_path_nodes++;
 		}
 
@@ -1315,29 +1355,29 @@ int split_leaf(ct_finger* finger, ct_kv* kv, int is_maximal, ct_pred_locator* pr
 	ct_entry* bitmap_node = &(path_nodes[num_path_nodes]);
 	path_prefix_hashes[num_path_nodes] = prefix_hash;
 	num_path_nodes++;
-	bitmap_node->parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_BITMAP;
-	bitmap_node->last_symbol = last_symbol;
-	memset(bitmap_node->child_bitmap, 0, CHILD_BITMAP_BYTES);
+	bitmap_node->common.parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_BITMAP;
+	bitmap_node->common.last_symbol = last_symbol;
+	memset(bitmap_node->type_specific.child_bitmap, 0, CHILD_BITMAP_BYTES);
 
 	// The first path node will replace the existing leaf, so it has to have the same color,
 	// tag and parent_color.
 	entry_set_parent_color(&(path_nodes[0]), entry_parent_color(&(finger->containing_entry.value)));
-	path_nodes[0].color_and_tag = finger->containing_entry.value.color_and_tag;
-	if (finger->containing_entry.value.parent_color_and_flags & FLAG_SECONDARY_BUCKET)
-		path_nodes[0].parent_color_and_flags |= FLAG_SECONDARY_BUCKET;
+	path_nodes[0].common.color_and_tag = finger->containing_entry.value.common.color_and_tag;
+	if (finger->containing_entry.value.common.parent_color_and_flags & FLAG_SECONDARY_BUCKET)
+		path_nodes[0].common.parent_color_and_flags |= FLAG_SECONDARY_BUCKET;
 
 	minimal_leaf_hash = accumulate_hash(finger->trie, prefix_hash, minimal_child);
 	maximal_leaf_hash = accumulate_hash(finger->trie, prefix_hash, maximal_child);
 
 	// Parent color isn't known yet, will be set later
-	maximal_leaf_content.parent_color_and_flags = TYPE_LEAF;
-	maximal_leaf_content.last_symbol = maximal_child;
+	maximal_leaf_content.common.parent_color_and_flags = TYPE_LEAF;
+	maximal_leaf_content.common.last_symbol = maximal_child;
 
 	// Create the maximal bitmap child
 	ret = add_entry(&(finger->lock_mgr),
 					maximal_leaf_hash,
 					&maximal_leaf_content,
-					NULL, &maximal_leaf, 1);
+					(ct_entry_descriptor){0}, &maximal_leaf, 1);
 
 	if (ret == SI_RETRY)
 		goto locking_failed;
@@ -1345,29 +1385,29 @@ int split_leaf(ct_finger* finger, ct_kv* kv, int is_maximal, ct_pred_locator* pr
 		goto trie_full;
 
 	entry_set_kv((ct_entry*) maximal_leaf, maximal_kv);
-	((ct_entry*) maximal_leaf)->next_leaf = original_leaf_next;
-	maximal_leaf_color = entry_color((ct_entry*) maximal_leaf);
+	maximal_leaf.type_specific->next_leaf = original_leaf_next;
+	maximal_leaf_color = entry_color_descriptor(maximal_leaf);
 	maximal_leaf_tag = hash_to_tag(maximal_leaf_hash);
 
 	// Mark the two children in the bitmap
-	set_bit(bitmap_node->child_bitmap, minimal_child, 1);
-	set_bit(bitmap_node->child_bitmap, maximal_child, 1);
-	bitmap_node->max_child = maximal_child;
+	set_bit(bitmap_node->type_specific.child_bitmap, minimal_child, 1);
+	set_bit(bitmap_node->type_specific.child_bitmap, maximal_child, 1);
+	bitmap_node->type_specific.max_child = maximal_child;
 
 	// Set maximal_leaf as the max_leaf of all path_nodes
 	for (i = 0;i < num_path_nodes;i++) {
-		path_nodes[i].max_leaf.color = maximal_leaf_color;
-		path_nodes[i].max_leaf.tag = maximal_leaf_tag;
-		path_nodes[i].max_leaf.primary_bucket = hash_to_bucket(maximal_leaf_hash);
+		path_nodes[i].type_specific.max_leaf.color = maximal_leaf_color;
+		path_nodes[i].type_specific.max_leaf.tag = maximal_leaf_tag;
+		path_nodes[i].type_specific.max_leaf.primary_bucket = hash_to_bucket(maximal_leaf_hash);
 	}
 
 	// Put all path nodes except the head in the hashtable, bottom-to-top
 	for (i = num_path_nodes - 1;i >= 1;i--) {
-		ct_entry_storage* entry;
+		ct_entry_descriptor entry;
 		ret = add_entry(&(finger->lock_mgr),
 						path_prefix_hashes[i],
 						&(path_nodes[i]),
-						NULL, &entry, 1);
+						(ct_entry_descriptor){0}, &entry, 1);
 		if (ret == SI_RETRY)
 			goto locking_failed;
 
@@ -1379,7 +1419,7 @@ int split_leaf(ct_finger* finger, ct_kv* kv, int is_maximal, ct_pred_locator* pr
 		entry_set_child_color(&(path_nodes[i-1]), entry_color(&(path_nodes[i])));
 	}
 
-	entry_set_parent_color((ct_entry*) maximal_leaf, entry_color(bitmap_node));
+	entry_set_parent_color_descriptor(maximal_leaf, entry_color(bitmap_node));
 
 	// Create the minimal bitmap child
 	ct_entry_locator minimal_leaf_next;
@@ -1387,10 +1427,10 @@ int split_leaf(ct_finger* finger, ct_kv* kv, int is_maximal, ct_pred_locator* pr
 	minimal_leaf_next.color = maximal_leaf_color;
 	minimal_leaf_next.tag = maximal_leaf_tag;
 
-	minimal_leaf_content.last_symbol = minimal_child;
-	minimal_leaf_content.parent_color_and_flags = (entry_color(bitmap_node) << PARENT_COLOR_SHIFT) | TYPE_LEAF;
+	minimal_leaf_content.common.last_symbol = minimal_child;
+	minimal_leaf_content.common.parent_color_and_flags = (entry_color(bitmap_node) << PARENT_COLOR_SHIFT) | TYPE_LEAF;
 	entry_set_kv(&minimal_leaf_content, minimal_kv);
-	minimal_leaf_content.next_leaf = minimal_leaf_next;
+	minimal_leaf_content.type_specific.next_leaf = minimal_leaf_next;
 	ret = add_entry(&(finger->lock_mgr), minimal_leaf_hash, &minimal_leaf_content,
 					maximal_leaf, &minimal_leaf, 1);
 	if (ret == SI_RETRY)
@@ -1427,13 +1467,13 @@ locking_failed:
 	}
 
 	// If we already created the maximal leaf, remove it
-	if (maximal_leaf) {
+	if (maximal_leaf.common) {
 		remove_entry_by_value(&(finger->lock_mgr), &maximal_leaf_content, maximal_leaf_hash);
 	}
 
 	// The minimal leaf is created last. If we succeed in creating it, it means that all locks
 	// were taken successfully. Since we're here, this couldn't have been the case.
-	assert(!minimal_leaf);
+	assert(!minimal_leaf.common);
 
 	release_all_locks(&(finger->lock_mgr));
 	return SI_RETRY;
@@ -1454,14 +1494,14 @@ int split_jump_node(ct_finger* finger) {
 	ct_entry new_bitmap;
 	int ret;
 	int created_new_bitmap = 0;
-	ct_entry_storage* bitmap_node_in_trie = NULL;
+	ct_entry_descriptor bitmap_node_in_trie = {0};
 	ct_entry_local_copy bitmap_child;
 	uint32_t bitmap_seq = -1;  // Just to please GCC, will be initialized later
 	uint64_t split_symbol;
 	uint64_t tail_prefix_hash;
 	uint64_t remaining_jump_symbols = finger->depth_in_jump;
 	ct_entry jump_node_backup = finger->containing_entry.value;
-	ct_entry_locator orig_max_leaf = finger->containing_entry.value.max_leaf;
+	ct_entry_locator orig_max_leaf = finger->containing_entry.value.type_specific.max_leaf;
 	int has_tail = (remaining_jump_symbols + 1 < entry_jump_size(&jump_node_backup));
 
 	assert(remaining_jump_symbols < entry_jump_size(&jump_node_backup));
@@ -1498,28 +1538,28 @@ int split_jump_node(ct_finger* finger) {
 		// Transform the jump into a bitmap node
 		entry_set_type(&new_head, TYPE_BITMAP);
 		bitmap_node = &new_head;
-		bitmap_node_in_trie = NULL;
+		bitmap_node_in_trie = (ct_entry_descriptor){0};;
 	} else {
 		// Create a new bitmap node
 		bitmap_node = &new_bitmap;
 
 		// Set parent color to INVALID_COLOR, as the bitmap is the child of a jump node
-		bitmap_node->parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_BITMAP;
-		bitmap_node->last_symbol = finger->last_prefix_symbol;
-		bitmap_node->max_leaf = orig_max_leaf;
+		bitmap_node->common.parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_BITMAP;
+		bitmap_node->common.last_symbol = finger->last_prefix_symbol;
+		bitmap_node->type_specific.max_leaf = orig_max_leaf;
 
 		created_new_bitmap = 1;
 	}
-	memset(bitmap_node->child_bitmap, 0, CHILD_BITMAP_BYTES);
+	memset(bitmap_node->type_specific.child_bitmap, 0, CHILD_BITMAP_BYTES);
 
-	set_bit(bitmap_node->child_bitmap, split_symbol, 1);
-	bitmap_node->max_child = split_symbol;
+	set_bit(bitmap_node->type_specific.child_bitmap, split_symbol, 1);
+	bitmap_node->type_specific.max_child = split_symbol;
 
 	if (created_new_bitmap) {
 		ret = add_entry(&(finger->lock_mgr),
 						finger->prefix_hash,
 						bitmap_node,
-						NULL,
+						(ct_entry_descriptor){0},
 						&bitmap_node_in_trie, 1);
 		if (ret == SI_RETRY)
 			goto locking_failed;
@@ -1534,14 +1574,14 @@ int split_jump_node(ct_finger* finger) {
 		// Create the tail jump node
 		uint64_t num_tail_symbols = entry_jump_size(&jump_node_backup) - remaining_jump_symbols - 1;
 		ct_entry tail_entry;
-		ct_entry_storage* tail_addr;
+		ct_entry_descriptor tail_addr;
 
-		tail_entry.parent_color_and_flags = (entry_color(bitmap_node) << PARENT_COLOR_SHIFT) | TYPE_JUMP;
-		tail_entry.child_color_and_jump_size = entry_child_color(&jump_node_backup) << CHILD_COLOR_SHIFT;
-		tail_entry.child_color_and_jump_size |= num_tail_symbols;
-		tail_entry.last_symbol = split_symbol;
-		tail_entry.max_leaf = orig_max_leaf;
-		copy_bits(tail_entry.jump_bits, jump_node_backup.jump_bits,
+		tail_entry.common.parent_color_and_flags = (entry_color(bitmap_node) << PARENT_COLOR_SHIFT) | TYPE_JUMP;
+		tail_entry.type_specific.child_color_and_jump_size = entry_child_color(&jump_node_backup) << CHILD_COLOR_SHIFT;
+		tail_entry.type_specific.child_color_and_jump_size |= num_tail_symbols;
+		tail_entry.common.last_symbol = split_symbol;
+		tail_entry.type_specific.max_leaf = orig_max_leaf;
+		copy_bits(tail_entry.type_specific.jump_bits, jump_node_backup.type_specific.jump_bits,
 				  (remaining_jump_symbols + 1) * BITS_PER_SYMBOL,
 				  num_tail_symbols * BITS_PER_SYMBOL);
 
@@ -1584,7 +1624,7 @@ int split_jump_node(ct_finger* finger) {
 
 locking_failed:
 	// If we already created the bitmap, remove it
-	if (bitmap_node_in_trie)
+	if (bitmap_node_in_trie.common)
 		remove_entry_by_value(&(finger->lock_mgr), bitmap_node, finger->prefix_hash);
 
 	release_all_locks(&(finger->lock_mgr));
@@ -1602,7 +1642,7 @@ trie_full:
 // the next symbol of <key>, after the prefix that the finger
 // points to.
 int create_leaf(ct_finger* finger, ct_kv* kv, uint64_t next_symbol) {
-	ct_entry_storage* new_leaf;
+	ct_entry_descriptor new_leaf;
 	ct_pred_locator pred_locator;
 	int result, ret;
 
@@ -1671,15 +1711,15 @@ int create_leaf(ct_finger* finger, ct_kv* kv, uint64_t next_symbol) {
 
 		// Update the next_leaf field of the new leaf. The new leaf is currently unreachable,
 		// so we don't have to increment the sequence of its bucket.
-		new_leaf_next = pred_locator.predecessor[0].value.next_leaf;
-		((ct_entry*) new_leaf)->next_leaf = new_leaf_next;
+		new_leaf_next = pred_locator.predecessor[0].value.type_specific.next_leaf;
+		new_leaf.type_specific->next_leaf = new_leaf_next;
 
 #ifndef NO_LINKED_LIST
 		mark_entry_dirty(finger->trie, &(pred_locator.predecessor[0]));
 #endif
 		linklist_insert(finger->trie, &pred_locator, new_leaf, hash_to_bucket(new_leaf_hash));
 		mark_bitmap_child(finger->trie, &(finger->last_path_entry->entry),
-						  next_symbol, new_leaf_hash, entry_color((ct_entry*) new_leaf));
+						  next_symbol, new_leaf_hash, entry_color_descriptor(new_leaf));
 
 		// Marking the child changed the bitmap. Update the finger.
 		reread_path_end(finger);
@@ -1809,7 +1849,7 @@ int descend(ct_finger* finger, uint64_t key_size, uint8_t* key_bytes, int track_
 
 int ct_insert_internal(cuckoo_trie* trie, ct_kv* kv, int is_upsert) {
 	ct_finger finger;
-	ct_entry_storage* root;
+	ct_entry_descriptor root;
 	uint64_t symbol = -1;  // Just to please GCC. Will be initialized later.
 	int result;
 	int ret;
@@ -1819,7 +1859,7 @@ int ct_insert_internal(cuckoo_trie* trie, ct_kv* kv, int is_upsert) {
 
 	root = init_finger(&finger, trie);
 
-	if (root == NULL) {
+	if (root.common == NULL) {
 		// The trie is empty
 		ret = create_root(&finger, kv);
 		if (ret == SI_EXISTS) {
@@ -1903,11 +1943,11 @@ int ct_upsert(cuckoo_trie* trie, ct_kv* kv, int* created_new) {
 ct_kv* ct_lookup(cuckoo_trie* trie, uint64_t key_size, uint8_t* key_bytes) {
 	int symbol;
 	ct_finger finger;
-	ct_entry_storage* root;
+	ct_entry_descriptor root;
 
 	root = init_finger(&finger, trie);
 
-	if (root == NULL)
+	if (root.common == NULL)
 		return NULL;  // The trie is empty
 
 	symbol = descend(&finger, key_size, key_bytes, 0);
@@ -1934,11 +1974,11 @@ int ct_update_internal(cuckoo_trie* trie, ct_kv* kv) {
 	int ret;
 	int symbol;
 	ct_finger finger;
-	ct_entry_storage* root;
+	ct_entry_descriptor root;
 
 	root = init_finger(&finger, trie);
 
-	if (root == NULL)
+	if (root.common == NULL)
 		return SI_FAIL;  // The trie is empty
 
 	symbol = descend(&finger, kv_key_size(kv), kv_key_bytes(kv), 0);
@@ -1986,7 +2026,7 @@ int ct_iter_goto_internal(ct_iter* iter, uint64_t key_size, uint8_t* key_bytes) 
 	uint64_t symbol = -1;  // Just to please GCC. Will be initialized later.
 	ct_finger finger;
 	ct_entry* longest_prefix;
-	ct_entry_storage* root;
+	ct_entry_descriptor root;
 	ct_pred_locator predecessor;
 	key_prefetcher prefetcher;
 	ct_path_entry* last_bitmap_path_pos = NULL;  // The lowest bitmap on the path to <key>
@@ -1997,7 +2037,7 @@ int ct_iter_goto_internal(ct_iter* iter, uint64_t key_size, uint8_t* key_bytes) 
 	root = init_finger(&finger, iter->trie);
 	iter->is_exhausted = 0;
 
-	if (root == NULL) {
+	if (root.common == NULL) {
 		// The trie is empty
 		iter->is_exhausted = 1;
 		return SI_OK;
@@ -2050,7 +2090,7 @@ int ct_iter_goto_internal(ct_iter* iter, uint64_t key_size, uint8_t* key_bytes) 
 		if (last_bitmap_path_pos != NULL) {
 			// TODO: We have the lowest-bitmap-above-this logic both here and inside
 			// find_left_descend. Remove it from here.
-			uint64_t last_bitmap_child = (last_bitmap_path_pos + 1)->entry.value.last_symbol;
+			uint64_t last_bitmap_child = (last_bitmap_path_pos + 1)->entry.value.common.last_symbol;
 			if (is_before_longest_prefix) {
 				prefetch_path_child_predecessor(&finger, last_bitmap_path_pos,
 												last_bitmap_child, &predecessor);
@@ -2093,12 +2133,12 @@ inline ct_entry_local_copy* iter_max_leaf(ct_iter* iter) {
 int ct_iter_next_internal(ct_iter* iter) {
 	ct_entry_local_copy new_leaf;
 
-	locator_to_entry(iter->trie, &(iter->leaves[0].value.next_leaf), &new_leaf);
+	locator_to_entry(iter->trie, &(iter->leaves[0].value.type_specific.next_leaf), &new_leaf);
 	if (entry_type(&(new_leaf.value)) != TYPE_LEAF)
 		return SI_RETRY;
 
 	copy_as_qwords(&(iter->leaves[0]), &new_leaf, sizeof(new_leaf));
-	prefetch_bucket_pair(iter->trie, new_leaf.value.next_leaf.primary_bucket, new_leaf.value.next_leaf.tag);
+	prefetch_bucket_pair(iter->trie, new_leaf.value.type_specific.next_leaf.primary_bucket, new_leaf.value.type_specific.next_leaf.tag);
 
 	return SI_OK;
 }
@@ -2115,7 +2155,7 @@ void ct_iter_goto(ct_iter* iter, uint64_t key_size, uint8_t* key_bytes) {
 			continue;
 #endif
 
-		if (iter->leaves[0].value.next_leaf.primary_bucket == ((uint32_t)-1))
+		if (iter->leaves[0].value.type_specific.next_leaf.primary_bucket == ((uint32_t)-1))
 			iter->is_exhausted = 1;
 
 		if (iter->is_exhausted)
@@ -2157,7 +2197,7 @@ ct_kv* ct_iter_next(ct_iter* iter) {
 		return entry_kv(&(iter_max_leaf(iter)->value));
 	}
 
-	if (iter->leaves[0].value.next_leaf.primary_bucket == ((uint32_t)-1)) {
+	if (iter->leaves[0].value.type_specific.next_leaf.primary_bucket == ((uint32_t)-1)) {
 		iter->is_exhausted = 1;
 		return NULL;
 	}
@@ -2212,9 +2252,11 @@ void init_buckets(cuckoo_trie* trie) {
 	for (bucket_num = 0; bucket_num < trie->num_buckets; bucket_num++) {
 		int i;
 		for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
-			ct_entry_storage* entry = &(trie->buckets[bucket_num].cells[i]);
-			((ct_entry*) entry)->parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_UNUSED;
-			((ct_entry*) entry)->color_and_tag = INVALID_COLOR << TAG_BITS;
+			ct_entry_descriptor entry = {.common = &(trie->buckets[bucket_num].common_cells[i]),
+										 .type_specific = &(trie->buckets[bucket_num].type_specific_cells[i])};
+
+			entry.common->parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_UNUSED;
+			entry.common->color_and_tag = INVALID_COLOR << TAG_BITS;
 		}
 		trie->buckets[bucket_num].write_lock_and_seq = 0;
 	}
@@ -2262,8 +2304,8 @@ cuckoo_trie* ct_alloc(uint64_t num_cells) {
 
 	// Set the type of the linklist heads to TYPE_LEAF, or predecessor search
 	// might try to access their max_leaf fields.
-	((ct_entry*) trie_min_leaf(result))->parent_color_and_flags = TYPE_LEAF;
-	((ct_entry*) trie_min_leaf(result))->next_leaf.primary_bucket = (uint32_t)-1;
+	trie_min_leaf(result).common->parent_color_and_flags = TYPE_LEAF;
+	trie_min_leaf(result).type_specific->next_leaf.primary_bucket = (uint32_t)-1;
 
 	result->is_empty = 1;
 	init_bucket_mix_table(result);

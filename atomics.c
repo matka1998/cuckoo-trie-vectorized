@@ -30,13 +30,18 @@ uint32_t read_int_atomic(uint32_t* addr) {
 #endif
 }
 
-uint32_t write_entry(ct_entry_storage* target, const ct_entry* src) {
-	assert(sizeof(ct_entry_storage) <= 16);   // We only write 2 QWORDS
-	assert(sizeof(ct_entry_storage) >= 8);    // Otherwise we'll write past the end of the entry
-	uint64_t src_part1 = *((uint64_t*)src);
-	uint64_t src_part2 = (*((__uint128_t*)src)) >> (8*(sizeof(ct_entry_storage)-8));
-	uint64_t* target_part1 = (uint64_t*)target;
-	uint64_t* target_part2 = (uint64_t*)(((uintptr_t)target) + sizeof(ct_entry_storage)-8);
+uint32_t write_entry(ct_entry_descriptor target, const ct_entry* src) {
+	// assert(sizeof(ct_entry_storage) <= 16);   // We only write 2 QWORDS
+	// assert(sizeof(ct_entry_storage) >= 8);    // Otherwise we'll write past the end of the entry
+
+	assert(sizeof(ct_common_header) == 3);
+	assert(sizeof(ct_type_specific_entry) == 12);
+	uint8_t * src_common = (uint8_t*)&src->common;
+	uint64_t * src_type_specific_1 = (uint64_t*)&(src->type_specific);
+	uint32_t * src_type_specific_2 = (uint32_t*)(((uint64_t*)&(src->type_specific)) + 1);
+	uint8_t * target_common = target.common;
+	uint64_t * target_type_specific_1 = (uint64_t*)target.type_specific;
+	uint32_t * target_type_specific_2 = (uint32_t*)( ((uint64_t*)target.type_specific) + 1);
 #ifndef MULTITHREADING
 	*target_part1 = src_part1;
 	*target_part2 = src_part2;
@@ -59,12 +64,18 @@ uint32_t write_entry(ct_entry_storage* target, const ct_entry* src) {
 	__atomic_store_n(counter, seq + SEQ_INCREMENT, __ATOMIC_RELEASE);
 	mt_debug_access_done();
 
+	for (int i = 0; i < 3; i++) {
+		mt_debug_wait_for_access();
+		__atomic_store_n(&(target_common[i]), src_common[i], __ATOMIC_RELEASE);
+		mt_debug_access_done();
+	}
+
 	mt_debug_wait_for_access();
-	__atomic_store_n(target_part1, src_part1, __ATOMIC_RELEASE);
+	__atomic_store_n(target_type_specific_1, src_type_specific_1, __ATOMIC_RELEASE);
 	mt_debug_access_done();
 
 	mt_debug_wait_for_access();
-	__atomic_store_n(target_part2, src_part2, __ATOMIC_RELEASE);
+	__atomic_store_n(target_type_specific_2, src_type_specific_2, __ATOMIC_RELEASE);
 	mt_debug_access_done();
 
 	mt_debug_wait_for_access();
@@ -75,7 +86,7 @@ uint32_t write_entry(ct_entry_storage* target, const ct_entry* src) {
 #endif
 }
 
-void entry_set_parent_color_atomic(ct_entry_storage* entry, uint8_t parent_color) {
+void entry_set_parent_color_atomic(ct_entry_descriptor entry, uint8_t parent_color) {
 #ifndef MULTITHREADING
 	entry_set_parent_color((ct_entry*)entry, parent_color);
 #else
@@ -283,7 +294,7 @@ void release_bucket_lock(ct_lock_mgr* lock_mgr, ct_bucket* bucket) {
 #endif
 }
 
-void write_lock_entry_in_locked_bucket(ct_lock_mgr* lock_mgr, ct_entry_storage* entry) {
+void write_lock_entry_in_locked_bucket(ct_lock_mgr* lock_mgr, ct_entry_descriptor entry) {
 #ifndef MULTITHREADING
 	UNUSED_PARAMETER(lock_mgr);
 	UNUSED_PARAMETER(entry);
@@ -300,7 +311,7 @@ void write_lock_entry_in_locked_bucket(ct_lock_mgr* lock_mgr, ct_entry_storage* 
 
 // If entry <src> is write-locked, release it and lock <dst> instead. Used to inform
 // the lock_mgr of entry relocations
-void move_entry_lock(ct_lock_mgr* lock_mgr, ct_entry_storage* dst, ct_entry_storage* src) {
+void move_entry_lock(ct_lock_mgr* lock_mgr, ct_entry_descriptor dst, ct_entry_descriptor src) {
 #ifndef MULTITHREADING
 	UNUSED_PARAMETER(lock_mgr);
 	UNUSED_PARAMETER(dst);
@@ -382,7 +393,7 @@ int upgrade_lock(ct_lock_mgr* lock_mgr, ct_entry_local_copy* entry) {
 #endif
 }
 
-void write_unlock(ct_lock_mgr* lock_mgr, ct_entry_storage* entry) {
+void write_unlock(ct_lock_mgr* lock_mgr, ct_entry_descriptor entry) {
 #ifndef MULTITHREADING
 	UNUSED_PARAMETER(lock_mgr);
 	UNUSED_PARAMETER(entry);
