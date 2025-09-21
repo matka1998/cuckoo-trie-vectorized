@@ -625,8 +625,8 @@ float load_factor(cuckoo_trie* trie) {
 	for (bucket = 0; bucket < trie->num_buckets; bucket++) {
 		for (i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
 			ct_entry_descriptor entry = {
-				.common = &trie->buckets[bucket].common_cells[i],
-				.type_specific = &trie->buckets[bucket].type_specific_cells[i]
+				.common = (ct_common_header*)&trie->buckets[bucket].common_cells[i],
+				.type_specific = (ct_type_specific_entry*)&trie->buckets[bucket].type_specific_cells[i]
 			};
 
 			if (entry_type_descriptor(entry) != TYPE_UNUSED)

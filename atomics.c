@@ -39,7 +39,7 @@ uint32_t write_entry(ct_entry_descriptor target, const ct_entry* src) {
 	uint8_t * src_common = (uint8_t*)&src->common;
 	uint64_t * src_type_specific_1 = (uint64_t*)&(src->type_specific);
 	uint32_t * src_type_specific_2 = (uint32_t*)(((uint64_t*)&(src->type_specific)) + 1);
-	uint8_t * target_common = target.common;
+	uint8_t * target_common = (uint8_t*)target.common;
 	uint64_t * target_type_specific_1 = (uint64_t*)target.type_specific;
 	uint32_t * target_type_specific_2 = (uint32_t*)( ((uint64_t*)target.type_specific) + 1);
 #ifndef MULTITHREADING
@@ -71,11 +71,11 @@ uint32_t write_entry(ct_entry_descriptor target, const ct_entry* src) {
 	}
 
 	mt_debug_wait_for_access();
-	__atomic_store_n(target_type_specific_1, src_type_specific_1, __ATOMIC_RELEASE);
+	__atomic_store_n(target_type_specific_1, *src_type_specific_1, __ATOMIC_RELEASE);
 	mt_debug_access_done();
 
 	mt_debug_wait_for_access();
-	__atomic_store_n(target_type_specific_2, src_type_specific_2, __ATOMIC_RELEASE);
+	__atomic_store_n(target_type_specific_2, *src_type_specific_2, __ATOMIC_RELEASE);
 	mt_debug_access_done();
 
 	mt_debug_wait_for_access();

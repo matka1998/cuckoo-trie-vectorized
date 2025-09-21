@@ -1,4 +1,5 @@
 #include "atomics.h"
+#include <stdint.h>
 
 typedef struct {
 	ct_entry_local_copy entry;
@@ -67,3 +68,4 @@ ct_entry_descriptor find_entry_in_pair_by_color(cuckoo_trie* trie, ct_entry_loca
 											  uint64_t primary_bucket, uint64_t tag,
 											  uint8_t color);
 uint64_t get_jump_symbol(ct_entry* entry, uint64_t symbol_idx);
+uint64_t get_jump_symbol_descriptor(ct_entry_descriptor entry, uint64_t symbol_idx);

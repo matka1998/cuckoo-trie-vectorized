@@ -260,6 +260,10 @@ static inline int entry_type(ct_entry* entry) {
 	return (entry->common.parent_color_and_flags & TYPE_MASK);
 }
 
+static inline int entry_type_descriptor(ct_entry_descriptor entry) {
+	return (entry.common->parent_color_and_flags & TYPE_MASK);
+}
+
 static inline void entry_set_child_bit(ct_entry* entry, uint64_t child) {
 	assert(entry_type(entry) == TYPE_BITMAP);
 	assert(sizeof(ct_entry) <= 16);
@@ -405,8 +409,23 @@ static inline ct_kv* entry_kv(ct_entry* entry) {
 	return (void*)result;
 }
 
+static inline ct_kv* entry_kv_descriptor(ct_entry_descriptor entry) {
+	// unoptimized version for descriptor variant.
+	// TODO: Make a variant that loads this as qwords.
+	uintptr_t result = entry.type_specific->key.low_dword | ((uintptr_t)(entry.type_specific->key.high_word) << 32);
+	if (result & 0x800000000000ULL)
+		result |= 0xFFFF000000000000ULL;
+	return (void*)result;
+}
+
 static inline void entry_set_kv(ct_entry* entry, ct_kv* kv) {
 	uintptr_t address_as_uint = (uintptr_t)kv;
 	entry->type_specific.key.low_dword = address_as_uint;
 	entry->type_specific.key.high_word = (address_as_uint >> 32) & 0xFFFF;
+}
+
+static inline void entry_set_kv_descriptor(ct_entry_descriptor entry, ct_kv* kv) {
+	uintptr_t address_as_uint = (uintptr_t)kv;
+	entry.type_specific->key.low_dword = address_as_uint;
+	entry.type_specific->key.high_word = (address_as_uint >> 32) & 0xFFFF;
 }

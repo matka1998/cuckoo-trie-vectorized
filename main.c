@@ -167,6 +167,17 @@ uint64_t get_jump_symbol(ct_entry* entry, uint64_t symbol_idx) {
 	return ((jump_bits >> (64 - BITS_PER_SYMBOL - BITS_PER_SYMBOL * symbol_idx)) & SYMBOL_MASK) + 1;
 }
 
+uint64_t get_jump_symbol_descriptor(ct_entry_descriptor entry, uint64_t symbol_idx) {
+	assert(MAX_JUMP_BITS <= 64);
+
+	//  Make sure we don't read past the entry's end
+	// assert(offsetof(ct_entry, jump_bits) + 8 <= sizeof(ct_entry_storage));
+
+	uint64_t jump_bits = *((uint64_t*) &(entry.type_specific->jump_bits[0]));
+	jump_bits = __builtin_bswap64(jump_bits);
+	return ((jump_bits >> (64 - BITS_PER_SYMBOL - BITS_PER_SYMBOL * symbol_idx)) & SYMBOL_MASK) + 1;
+}
+
 // Get the <i>'th symbol of the key, zero-padding if neccessary
 uint64_t get_string_symbol(uint64_t size, uint8_t* bytes, uint64_t symbol_idx) {
 	assert(BITS_PER_SYMBOL <= 8);
@@ -395,8 +406,8 @@ ct_entry_descriptor find_free_cell_in_bucket(ct_bucket* bucket) {
 
 	for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
 		ct_entry_descriptor entry = {
-			.common = &(bucket->common_cells[i]),
-			.type_specific = &(bucket->type_specific_cells[i])
+			.common = (ct_common_header*)&(bucket->common_cells[i]),
+			.type_specific = (ct_type_specific_entry*)&(bucket->type_specific_cells[i])
 		};
 
 		if (entry_type_descriptor(entry) == TYPE_UNUSED)
@@ -409,8 +420,8 @@ ct_entry_descriptor find_free_cell_in_bucket(ct_bucket* bucket) {
 ct_entry_descriptor find_root(cuckoo_trie* trie, ct_entry_local_copy* result) {
 	uint64_t root_primary_bucket = hash_to_bucket(HASH_START_VALUE);
 	ct_entry_descriptor root_pos = {
-		.common = &(trie->buckets[root_primary_bucket].common_cells[0]),
-		.type_specific = &(trie->buckets[root_primary_bucket].type_specific_cells[0])
+		.common = (ct_common_header*)&(trie->buckets[root_primary_bucket].common_cells[0]),
+		.type_specific = (ct_type_specific_entry*)&(trie->buckets[root_primary_bucket].type_specific_cells[0])
 	};
 	result->last_seq = read_entry(root_pos, &(result->value));
 	result->last_pos = root_pos;
@@ -603,8 +614,8 @@ int create_root(ct_finger* finger, ct_kv* kv) {
 		return SI_EXISTS;
 	}
 
-	write_entry((ct_entry_descriptor){.common = &(root_primary_bucket->common_cells[0]),
-						.type_specific = &(root_primary_bucket->type_specific_cells[0])}, &root);
+	write_entry((ct_entry_descriptor){.common = (ct_common_header*)&(root_primary_bucket->common_cells[0]),
+						.type_specific = (ct_type_specific_entry*)&(root_primary_bucket->type_specific_cells[0])}, &root);
 
 	trie_min_leaf(finger->trie).type_specific->next_leaf.primary_bucket = primary_bucket_num;
 	trie_min_leaf(finger->trie).type_specific->next_leaf.tag = tag;
@@ -775,16 +786,16 @@ uint8_t unused_color_in_pair(ct_bucket* bucket1, ct_bucket* bucket2) {
 
 	for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
 		ct_entry_descriptor entry = {
-			.common = &(bucket1->common_cells[i]),
-			.type_specific = &(bucket1->type_specific_cells[i])
+			.common = (ct_common_header*)&(bucket1->common_cells[i]),
+			.type_specific = (ct_type_specific_entry*)&(bucket1->type_specific_cells[i])
 		};
 
 		// Turn on the bit corresponding to the entry's color.
 		used_colors |= 1ULL << entry_color_descriptor(entry);
 
 		entry = (ct_entry_descriptor){
-			.common = &(bucket2->common_cells[i]),
-			.type_specific = &(bucket2->type_specific_cells[i])
+			.common = (ct_common_header*)&(bucket2->common_cells[i]),
+			.type_specific = (ct_type_specific_entry*)&(bucket2->type_specific_cells[i])
 		};
 		used_colors |= 1ULL << entry_color_descriptor(entry);
 	}
@@ -813,8 +824,8 @@ int relocate_entry(cuckoo_trie* trie, ct_lock_mgr* lock_mgr, uint64_t bucket_num
 	relocation_queue_entry queue[RELOCATE_QUEUE_SIZE];
 	ct_entry_descriptor free_cell;
 	ct_entry_descriptor occupied_cell;
-	ct_entry_descriptor root = {.common = &trie->buckets[hash_to_bucket(HASH_START_VALUE)].common_cells[0],
-								.type_specific = &trie->buckets[hash_to_bucket(HASH_START_VALUE)].type_specific_cells[0]};
+	ct_entry_descriptor root = {.common = (ct_common_header*)&trie->buckets[hash_to_bucket(HASH_START_VALUE)].common_cells[0],
+								.type_specific = (ct_type_specific_entry*)&trie->buckets[hash_to_bucket(HASH_START_VALUE)].type_specific_cells[0]};
 	ct_bucket_read_lock read_lock;
 	int free_cell_found = 0;
 	int queue_pos = 0;
@@ -834,8 +845,8 @@ int relocate_entry(cuckoo_trie* trie, ct_lock_mgr* lock_mgr, uint64_t bucket_num
 		// in it.
 
 		for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
-			ct_entry_descriptor entry = { .common = &(trie->buckets[queue[queue_pos].bucket].common_cells[i]),
-										 .type_specific = &(trie->buckets[queue[queue_pos].bucket].type_specific_cells[i]) };
+			ct_entry_descriptor entry = { .common = (ct_common_header*)&(trie->buckets[queue[queue_pos].bucket].common_cells[i]),
+										 .type_specific = (ct_type_specific_entry*)&(trie->buckets[queue[queue_pos].bucket].type_specific_cells[i]) };
 
 			if (entry.common == immovable_entry.common)
 				continue;
@@ -906,8 +917,8 @@ int relocate_entry(cuckoo_trie* trie, ct_lock_mgr* lock_mgr, uint64_t bucket_num
 	occupied_queue_pos = queue_pos - 1;
 	while (1) {
 		occupied_cell = (ct_entry_descriptor){
-			.common = &(trie->buckets[queue[occupied_queue_pos].bucket].common_cells[queue[occupied_queue_pos].child_idx]),
-			.type_specific = &(trie->buckets[queue[occupied_queue_pos].bucket].type_specific_cells[queue[occupied_queue_pos].child_idx])
+			.common = (ct_common_header*)&(trie->buckets[queue[occupied_queue_pos].bucket].common_cells[queue[occupied_queue_pos].child_idx]),
+			.type_specific = (ct_type_specific_entry*)&(trie->buckets[queue[occupied_queue_pos].bucket].type_specific_cells[queue[occupied_queue_pos].child_idx])
 		};
 		// occupied_cell = &(trie->buckets[queue[occupied_queue_pos].bucket].cells[child_idx]);
 
@@ -1384,7 +1395,7 @@ int split_leaf(ct_finger* finger, ct_kv* kv, int is_maximal, ct_pred_locator* pr
 	if (ret == SI_FAIL)
 		goto trie_full;
 
-	entry_set_kv((ct_entry*) maximal_leaf, maximal_kv);
+	entry_set_kv_descriptor(maximal_leaf, maximal_kv);
 	maximal_leaf.type_specific->next_leaf = original_leaf_next;
 	maximal_leaf_color = entry_color_descriptor(maximal_leaf);
 	maximal_leaf_tag = hash_to_tag(maximal_leaf_hash);
@@ -2252,8 +2263,8 @@ void init_buckets(cuckoo_trie* trie) {
 	for (bucket_num = 0; bucket_num < trie->num_buckets; bucket_num++) {
 		int i;
 		for (i = 0;i < CUCKOO_BUCKET_SIZE;i++) {
-			ct_entry_descriptor entry = {.common = &(trie->buckets[bucket_num].common_cells[i]),
-										 .type_specific = &(trie->buckets[bucket_num].type_specific_cells[i])};
+			ct_entry_descriptor entry = {.common = (ct_common_header*)&(trie->buckets[bucket_num].common_cells[i]),
+										 .type_specific = (ct_type_specific_entry*)&(trie->buckets[bucket_num].type_specific_cells[i])};
 
 			entry.common->parent_color_and_flags = (INVALID_COLOR << PARENT_COLOR_SHIFT) | TYPE_UNUSED;
 			entry.common->color_and_tag = INVALID_COLOR << TAG_BITS;
