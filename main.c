@@ -917,8 +917,8 @@ int relocate_entry(cuckoo_trie* trie, ct_lock_mgr* lock_mgr, uint64_t bucket_num
 	occupied_queue_pos = queue_pos - 1;
 	while (1) {
 		occupied_cell = (ct_entry_descriptor){
-			.common = (ct_common_header*)&(trie->buckets[queue[occupied_queue_pos].bucket].common_cells[queue[occupied_queue_pos].child_idx]),
-			.type_specific = (ct_type_specific_entry*)&(trie->buckets[queue[occupied_queue_pos].bucket].type_specific_cells[queue[occupied_queue_pos].child_idx])
+			.common = (ct_common_header*)&(trie->buckets[queue[occupied_queue_pos].bucket].common_cells[child_idx]),
+			.type_specific = (ct_type_specific_entry*)&(trie->buckets[queue[occupied_queue_pos].bucket].type_specific_cells[child_idx])
 		};
 		// occupied_cell = &(trie->buckets[queue[occupied_queue_pos].bucket].cells[child_idx]);
 
