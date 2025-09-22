@@ -43,30 +43,35 @@ static inline void init_lock_mgr(ct_lock_mgr* lock_mgr, cuckoo_trie* trie) {
 	lock_mgr->next_write_lock = &(lock_mgr->bucket_write_locks[0]);
 }
 
-static inline ct_bucket* bucket_containing(ct_entry_storage* entry) {
+static inline ct_bucket* bucket_containing(ct_entry_descriptor entry) {
 	assert(sizeof(ct_bucket) == 64);
-	return (ct_bucket*)(((uintptr_t)entry) & (~(64 - 1)));
+	return (ct_bucket*)(((uintptr_t)entry.common) & (~(64 - 1)));
 }
 
-static inline uint32_t* counter_ptr(ct_entry_storage* entry) {
+static inline uint32_t* counter_ptr(ct_entry_descriptor entry) {
 	return &(bucket_containing(entry)->write_lock_and_seq);
 }
 
-static inline uint32_t read_entry(ct_entry_storage* entry, ct_entry* result) {
+static inline uint32_t read_entry(ct_entry_descriptor entry, ct_entry* result) {
 	// Make sure we don't read beyond the bucket's end
-	assert(((uintptr_t)bucket_containing(entry)) + sizeof(ct_bucket) >= ((uintptr_t)entry) + 16);
+	// assert(((uintptr_t)bucket_containing(entry)) + sizeof(ct_bucket) >= ((uintptr_t)entry) + 16);
 
 #ifndef MULTITHREADING
 	*result = *((ct_entry*)entry);
 	return 0;
 #else
-	assert(sizeof(ct_entry) <= 16);   // We only read 2 QWORDS
+	assert(sizeof(ct_common_header) == 3);
+	assert(sizeof(ct_type_specific_entry) == 12);
 
 	uint32_t seq1;
 	uint32_t seq2;
 	uint32_t* counter = counter_ptr(entry);
-	uint64_t* entry_parts = (uint64_t*)entry;
-	uint64_t* result_parts = (uint64_t*)result;
+	uint8_t * src_common = (uint8_t*)entry.common;
+	uint64_t * src_type_specific_1 = (uint64_t*)entry.type_specific;
+	uint32_t * src_type_specific_2 = (uint32_t*)(((uint64_t*)entry.type_specific) + 1);
+	uint8_t * target_common = (uint8_t*)&result->common;
+	uint64_t * target_type_specific_1 = (uint64_t*)&result->type_specific;
+	uint32_t * target_type_specific_2 = (uint32_t*)(((uint64_t*)&result->type_specific) + 1);
 	while (1) {
 		mt_debug_wait_for_access();
 		seq1 = __atomic_load_n(counter, __ATOMIC_ACQUIRE);
@@ -74,12 +79,18 @@ static inline uint32_t read_entry(ct_entry_storage* entry, ct_entry* result) {
 		if (unlikely(seq1 & SEQ_INCREMENT))
 			continue;   // A write is in progress
 
+		for (int i = 0; i < 3; i++) {
+			mt_debug_wait_for_access();
+			target_common[i] = __atomic_load_n(&(src_common[i]), __ATOMIC_ACQUIRE);
+			mt_debug_access_done();
+		}
+
 		mt_debug_wait_for_access();
-		result_parts[0] = __atomic_load_n(&(entry_parts[0]), __ATOMIC_ACQUIRE);
+		*target_type_specific_1 = __atomic_load_n(src_type_specific_1, __ATOMIC_ACQUIRE);
 		mt_debug_access_done();
 
 		mt_debug_wait_for_access();
-		result_parts[1] = __atomic_load_n(&(entry_parts[1]), __ATOMIC_ACQUIRE);
+		*target_type_specific_2 = __atomic_load_n(src_type_specific_2, __ATOMIC_ACQUIRE);
 		mt_debug_access_done();
 
 		mt_debug_wait_for_access();
@@ -99,31 +110,41 @@ static inline uint32_t read_entry(ct_entry_storage* entry, ct_entry* result) {
 // of the result may be inconsistent.
 // It is used to ensure that the compiler only reads the entry once, and doesn't assume
 // that it won't be changed by other threads.
-static inline void read_entry_non_atomic(ct_entry_storage* entry, ct_entry* result) {
+static inline void read_entry_non_atomic(ct_entry_descriptor entry, ct_entry* result) {
 	// Make sure we don't read beyond the bucket's end
-	assert(((uintptr_t)bucket_containing(entry)) + sizeof(ct_bucket) >= ((uintptr_t)entry) + 16);
+	// assert(((uintptr_t)bucket_containing(entry)) + sizeof(ct_bucket) >= ((uintptr_t)entry) + 16);
 #ifndef MULTITHREADING
 	memcpy(result, entry, sizeof(ct_entry));
 #else
-	assert(sizeof(ct_entry) <= 16);   // We only read 2 QWORDS
+	assert(sizeof(ct_common_header) == 3);
+	assert(sizeof(ct_type_specific_entry) == 12);
+	uint8_t * src_common = (uint8_t*)entry.common;
+	uint64_t * src_type_specific_1 = (uint64_t*)entry.type_specific;
+	uint32_t * src_type_specific_2 = (uint32_t*)(((uint64_t*)entry.type_specific) + 1);
+	uint8_t * target_common = (uint8_t*)&result->common;
+	uint64_t * target_type_specific_1 = (uint64_t*)&result->type_specific;
+	uint32_t * target_type_specific_2 = (uint32_t*)(((uint64_t*)&result->type_specific) + 1);
 
-	uint64_t* entry_parts = (uint64_t*)entry;
-	uint64_t* result_parts = (uint64_t*)result;
+	for (int i = 0 ; i < 3; i++) {
+		mt_debug_wait_for_access();
+		target_common[i] = __atomic_load_n(&(src_common[i]), __ATOMIC_ACQUIRE);
+		mt_debug_access_done();
+	}
 
 	mt_debug_wait_for_access();
-	result_parts[0] = __atomic_load_n(&(entry_parts[0]), __ATOMIC_ACQUIRE);
+	*target_type_specific_1 = __atomic_load_n(src_type_specific_1, __ATOMIC_ACQUIRE);
 	mt_debug_access_done();
 
 	mt_debug_wait_for_access();
-	result_parts[1] = __atomic_load_n(&(entry_parts[1]), __ATOMIC_ACQUIRE);
+	*target_type_specific_2 = __atomic_load_n(src_type_specific_2, __ATOMIC_ACQUIRE);
 	mt_debug_access_done();
 #endif
 }
 
 void write_int_atomic(uint32_t* addr, uint32_t value);
 uint32_t read_int_atomic(uint32_t* addr);
-uint32_t write_entry(ct_entry_storage* target, const ct_entry* src);
-void entry_set_parent_color_atomic(ct_entry_storage* entry, uint8_t parent_color);
+uint32_t write_entry(ct_entry_descriptor target, const ct_entry* src);
+void entry_set_parent_color_atomic(ct_entry_descriptor entry, uint8_t parent_color);
 uint64_t bucket_write_locked(ct_lock_mgr* lock_mgr, ct_bucket* bucket_num);
 void read_lock_bucket(ct_bucket* bucket_num, ct_bucket_read_lock* read_lock);
 int read_unlock_bucket(ct_bucket_read_lock* read_lock);
@@ -131,9 +152,9 @@ ct_bucket_write_lock* write_lock_bucket(ct_lock_mgr* lock_mgr, ct_bucket* bucket
 int upgrade_bucket_lock(ct_lock_mgr* lock_mgr, ct_bucket_read_lock* read_lock);
 void release_bucket_lock(ct_lock_mgr* lock_mgr, ct_bucket* bucket_num);
 
-void write_lock_entry_in_locked_bucket(ct_lock_mgr* lock_mgr, ct_entry_storage* entry);
-void move_entry_lock(ct_lock_mgr* lock_mgr, ct_entry_storage* dst, ct_entry_storage* src);
+void write_lock_entry_in_locked_bucket(ct_lock_mgr* lock_mgr, ct_entry_descriptor entry);
+void move_entry_lock(ct_lock_mgr* lock_mgr, ct_entry_descriptor dst, ct_entry_descriptor src);
 int upgrade_lock(ct_lock_mgr* lock_mgr, ct_entry_local_copy* entry);
 void upgrade_lock_wait(ct_lock_mgr* lock_mgr, ct_entry_local_copy* entry);
-void write_unlock(ct_lock_mgr* lock_mgr, ct_entry_storage* entry);
+void write_unlock(ct_lock_mgr* lock_mgr, ct_entry_descriptor entry);
 void release_all_locks(ct_lock_mgr* lock_mgr);
