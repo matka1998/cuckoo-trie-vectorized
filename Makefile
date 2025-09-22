@@ -1,6 +1,6 @@
-LIB_SOURCES=main.c util.c verify_trie.c random.c atomics.c mt_debug.c
+LIB_SOURCES=main.c util.c verify_trie.c random.c atomics.c mt_debug.c intrinsics.c
 LIB_DEPS=${LIB_SOURCES} atomics.h config.h cuckoo_trie.h main.h util.h \
-					key_object.h cuckoo_trie_internal.h random.h mt_debug.h
+					key_object.h cuckoo_trie_internal.h random.h mt_debug.h intrinsics.h
 TEST_SOURCES=test.c random.c dataset.c util.c
 TEST_DEPS=${TEST_SOURCES} cuckoo_trie.h random.h key_object.h dataset.h util.h
 BENCHMARK_SOURCES=benchmark.c random.c dataset.c util.c random_dist.c
@@ -11,8 +11,7 @@ BINARIES=libcuckoo_trie.so libcuckoo_trie_debug.so test test_debug benchmark
 # won't inline them
 OPTIMIZE_FLAGS=-O3 -fvisibility=hidden -flto -fno-strict-aliasing
 
-# Add -march=haswell to enable the bextr_u32 builtin
-FLAGS=-march=haswell -Wreturn-type -Wuninitialized -Wunused-parameter
+FLAGS=-march=native -mavx512vbmi2 -mavx512vl -Wreturn-type -Wuninitialized -Wunused-parameter
 
 CC ?= gcc
 
