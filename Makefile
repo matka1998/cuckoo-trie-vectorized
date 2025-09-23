@@ -1,6 +1,6 @@
-LIB_SOURCES=main.c util.c verify_trie.c random.c atomics.c mt_debug.c intrinsics.c
+LIB_SOURCES=main.c util.c verify_trie.c random.c atomics.c mt_debug.c
 LIB_DEPS=${LIB_SOURCES} atomics.h config.h cuckoo_trie.h main.h util.h \
-					key_object.h cuckoo_trie_internal.h random.h mt_debug.h intrinsics.h
+					key_object.h cuckoo_trie_internal.h random.h mt_debug.h
 TEST_SOURCES=test.c random.c dataset.c util.c
 TEST_DEPS=${TEST_SOURCES} cuckoo_trie.h random.h key_object.h dataset.h util.h
 BENCHMARK_SOURCES=benchmark.c random.c dataset.c util.c random_dist.c
@@ -11,9 +11,18 @@ BINARIES=libcuckoo_trie.so libcuckoo_trie_debug.so test test_debug benchmark
 # won't inline them
 OPTIMIZE_FLAGS=-O3 -fvisibility=hidden -flto -fno-strict-aliasing
 
-FLAGS=-march=native -mavx512vbmi2 -mavx512vl -Wreturn-type -Wuninitialized -Wunused-parameter
+FLAGS=-march=native -Wreturn-type -Wuninitialized -Wunused-parameter
 
 CC ?= gcc
+
+USE_INTRINSICS :=
+
+ifneq ($(NOSIMD),1)
+	FLAGS += -mavx512vbmi2 -mavx512vl -mavx2
+	LIB_SOURCES += intrinsics.c
+	LIB_DEPS += intrinsics.h
+	USE_INTRINSICS=-DINTRINSICS
+endif
 
 all: ${BINARIES}
 
@@ -21,10 +30,10 @@ clean:
 	rm ${BINARIES}
 
 libcuckoo_trie.so: Makefile ${LIB_DEPS}
-	${CC} ${FLAGS} ${OPTIMIZE_FLAGS} -fPIC -shared -march=haswell -DNDEBUG -o $@ ${LIB_SOURCES}
+	${CC} ${FLAGS} ${OPTIMIZE_FLAGS}  -fPIC -shared -march=haswell -DNDEBUG ${USE_INTRINSICS} -o $@ ${LIB_SOURCES}
 
 libcuckoo_trie_debug.so: Makefile ${LIB_DEPS}
-	${CC} ${FLAGS} -O1 -fPIC -shared -march=haswell -g -o $@ ${LIB_SOURCES}
+	${CC} ${FLAGS} -O1  -fPIC -shared -march=haswell -g ${USE_INTRINSICS} -o $@ ${LIB_SOURCES}
 
 test: Makefile ${TEST_DEPS}
 	${CC} ${FLAGS} ${OPTIMIZE_FLAGS} -Wl,-rpath=. -o $@ ${TEST_SOURCES} libcuckoo_trie.so -lpthread
