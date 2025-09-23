@@ -1,3 +1,5 @@
+#ifndef UTIL_H
+#define UTIL_H
 #include <assert.h>
 
 #define HUGEPAGE_LOG_SIZE 21
@@ -34,3 +36,5 @@ int last_bit_before(uint8_t* bitstring, int end);
 void* mmap_hugepage(size_t size);
 void dynamic_buffer_init(dynamic_buffer_t* buf);
 uint64_t dynamic_buffer_extend(dynamic_buffer_t* buf, uint64_t data_size);
+
+#endif // UTIL_H
