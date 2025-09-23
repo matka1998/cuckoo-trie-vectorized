@@ -1,3 +1,5 @@
+#ifndef ATOMICS_H
+#define ATOMICS_H
 #include "mt_debug.h"
 #include "cuckoo_trie_internal.h"
 #include <string.h>
@@ -158,3 +160,5 @@ int upgrade_lock(ct_lock_mgr* lock_mgr, ct_entry_local_copy* entry);
 void upgrade_lock_wait(ct_lock_mgr* lock_mgr, ct_entry_local_copy* entry);
 void write_unlock(ct_lock_mgr* lock_mgr, ct_entry_descriptor entry);
 void release_all_locks(ct_lock_mgr* lock_mgr);
+
+#endif // ATOMICS_H

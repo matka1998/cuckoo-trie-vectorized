@@ -1,3 +1,5 @@
+#ifndef RANDOM_H
+#define RANDOM_H
 #include <stdint.h>
 
 #define MAX_ZIPF_RANGES 10000
@@ -42,3 +44,5 @@ void random_bytes(uint8_t* buf, int count);
 void rand_seed(uint64_t s);
 long int seed_from_time();
 void seed_and_print();
+
+#endif // RANDOM_H

@@ -1,3 +1,5 @@
+#ifndef MAIN_H
+#define MAIN_H
 #include "atomics.h"
 #include <stdint.h>
 
@@ -69,3 +71,5 @@ ct_entry_descriptor find_entry_in_pair_by_color(cuckoo_trie* trie, ct_entry_loca
 											  uint8_t color);
 uint64_t get_jump_symbol(ct_entry* entry, uint64_t symbol_idx);
 uint64_t get_jump_symbol_descriptor(ct_entry_descriptor entry, uint64_t symbol_idx);
+
+#endif // MAIN_H

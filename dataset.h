@@ -1,3 +1,5 @@
+#ifndef DATASET_H
+#define DATASET_H
 #include <stdint.h>
 #include "cuckoo_trie.h"
 
@@ -20,3 +22,5 @@ typedef struct dataset_t_struct {
 
 int init_dataset(dataset_t* dataset, const char* name, uint64_t keys_requested);
 void build_kvs(dataset_t* dataset, int value_size);
+
+#endif // DATASET_H
