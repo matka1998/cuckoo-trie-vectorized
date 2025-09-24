@@ -231,7 +231,7 @@ ct_entry_descriptor find_entry_in_buckets_by_headers(ct_bucket* primary_bucket, 
 	// Let's hope no shenanigans will happen by reading both buckets simultaneously.
 	uint32_t primary_start_counter = read_int_atomic(&(primary_bucket->write_lock_and_seq));
 	uint32_t secondary_start_counter = read_int_atomic(&(secondary_bucket->write_lock_and_seq));
-	if (primary_start_counter & SEQ_INCREMENT | secondary_start_counter & SEQ_INCREMENT)
+	if (primary_start_counter & SEQ_INCREMENT || secondary_start_counter & SEQ_INCREMENT)
 		return (ct_entry_descriptor){0};   // Bucket is being written. The retry loop will call us again.
 #else
 	assert(primary_bucket->write_lock_and_seq == 0);
@@ -259,14 +259,12 @@ ct_entry_descriptor find_entry_in_buckets_by_headers(ct_bucket* primary_bucket, 
 	read_entry_non_atomic(found_entry, &(result->value));
 
 #ifdef MULTITHREADING
-	// This can be optmizied - note that we only care the correctness of the sequence number of the bucket we found a hit it, so no need to check both.
-	// in addition, we can have hits in both buckets if there was some writing shenanigans, so let's make the check a bit more robust.
-	if (read_int_atomic(&(primary_bucket->write_lock_and_seq)) != primary_start_counter) {
+	if (is_primary && read_int_atomic(&(primary_bucket->write_lock_and_seq)) != primary_start_counter) {
 		// The bucket changed while we read it. We rely on the retry loop in
 		// find_entry_in_pair_by_parent to call us again
 		return (ct_entry_descriptor){0};
 	}
-	if (read_int_atomic(&(secondary_bucket->write_lock_and_seq)) != secondary_start_counter) {
+	else if (!is_primary && read_int_atomic(&(secondary_bucket->write_lock_and_seq)) != secondary_start_counter) {
 		// The bucket changed while we read it. We rely on the retry loop in
 		// find_entry_in_pair_by_parent to call us again
 		return (ct_entry_descriptor){0};
