@@ -467,9 +467,6 @@ ct_entry_descriptor find_entry_in_pair_by_color(cuckoo_trie* trie, ct_entry_loca
 
 		uint64_t secondary_bucket = mix_bucket(trie, primary_bucket, tag);
 		entry_addr = find_entry_in_bucket_by_color(&(trie->buckets[secondary_bucket]), result, 1, tag, color);
-		if (entry_addr.common)
-			break;
-
 		#else
 		entry_addr = find_entry_in_bucket_by_color_vectorized(&(trie->buckets[primary_bucket]),
 		                                                      &(trie->buckets[secondary_bucket]),
@@ -477,6 +474,9 @@ ct_entry_descriptor find_entry_in_pair_by_color(cuckoo_trie* trie, ct_entry_loca
 															  tag,
 															  color);
 		#endif
+		if (entry_addr.common)
+			break;
+
 		// The entry might have been relocated from the secondary to the primary bucket
 		// just after we searched the primary bucket. Try searching both buckets again.
 
