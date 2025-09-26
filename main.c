@@ -207,6 +207,61 @@ void prefetch_bucket_pair(cuckoo_trie* trie, uint64_t primary_bucket, uint8_t ta
 	}
 }
 
+ct_entry_storage* find_entry_in_bucket_by_color_vectorized(ct_bucket* first_bucket, ct_bucket* secondary_bucket,
+	ct_entry_local_copy* result, uint64_t tag, uint64_t color) {
+	int i;
+	uint64_t header_mask = 0;
+	uint64_t first_header_values = 0, second_header_values = 0;
+
+	header_mask |= ((1ULL << TAG_BITS) - 1) << (8*offsetof(ct_entry, color_and_tag));
+	first_header_values |= tag << (8*offsetof(ct_entry, color_and_tag));
+
+	header_mask |= ((uint64_t)((0xFF << TAG_BITS) & 0xFF)) << (8*offsetof(ct_entry, color_and_tag));
+	first_header_values |= color << (8*offsetof(ct_entry, color_and_tag) + TAG_BITS);
+
+	header_mask |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
+	second_header_values = first_header_values | FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
+
+#ifdef MULTITHREADING
+	uint32_t first_start_counter = read_int_atomic(&(first_bucket->write_lock_and_seq));
+	uint32_t second_start_counter = read_int_atomic(&(secondary_bucket->write_lock_and_seq));
+	if ((first_start_counter & SEQ_INCREMENT) || (second_start_counter & SEQ_INCREMENT))
+		return NULL;   // One of the buckets is being written. The retry loop will call us again.
+#else
+	assert(first_bucket->write_lock_and_seq == 0);
+	assert(secondary_bucket->write_lock_and_seq == 0);
+#endif
+
+	int found_index = find_free_cell_by_mask(first_bucket, secondary_bucket, header_mask, first_header_values, second_header_values);
+	int is_primary;
+	ct_bucket* found_bucket;
+	if (found_index == -1)
+		return NULL;
+
+	if (found_index < CUCKOO_BUCKET_SIZE) {
+		is_primary = 1;
+		found_bucket = first_bucket;
+	} else {
+		is_primary = 0;
+		found_index -= CUCKOO_BUCKET_SIZE;
+		found_bucket = secondary_bucket;
+	}
+#ifdef MULTITHREADING
+	if ((is_primary & read_int_atomic(&(first_bucket->write_lock_and_seq)) != first_start_counter) ||
+		(!is_primary & read_int_atomic(&(secondary_bucket->write_lock_and_seq)) != second_start_counter)) {
+		// The used bucket changed while we read it. We rely on the retry loop in
+		// find_entry_in_pair_by_color to call us again
+		return NULL;
+	}
+	result->last_seq = is_primary ? first_start_counter : second_start_counter;
+#endif
+
+	result->last_pos = &(found_bucket->cells[found_index]);
+	if (!result->last_pos)
+		__builtin_unreachable();
+	return result->last_pos;
+}
+
 ct_entry_storage* find_entry_in_bucket_by_color(ct_bucket* bucket,
 												ct_entry_local_copy* result, uint64_t is_secondary,
 												uint64_t tag, uint64_t color) {
@@ -252,6 +307,68 @@ ct_entry_storage* find_entry_in_bucket_by_color(ct_bucket* bucket,
 #endif
 
 	result->last_pos = &(bucket->cells[i]);
+	if (!result->last_pos)
+		__builtin_unreachable();
+	return result->last_pos;
+}
+
+ct_entry_storage* find_entry_in_bucket_by_parent_vectorized(ct_bucket* first_bucket, ct_bucket* secondary_bucket,
+	ct_entry_local_copy* result, uint64_t tag,
+	uint64_t last_symbol, uint64_t parent_color)
+{
+	int i;
+
+	uint64_t header_mask = 0;
+	uint64_t first_header_values = 0, second_header_values = 0;
+
+	header_mask |= ((1ULL << TAG_BITS) - 1) << (8*offsetof(ct_entry, color_and_tag));
+	first_header_values |= tag << (8*offsetof(ct_entry, color_and_tag));
+
+	header_mask |= 0xFFULL << (8*offsetof(ct_entry, last_symbol));
+	first_header_values |= last_symbol << (8*offsetof(ct_entry, last_symbol));
+
+	const uint64_t parent_color_mask = (0xFFULL << PARENT_COLOR_SHIFT) & 0xFF;
+	header_mask |= parent_color_mask << (8*offsetof(ct_entry, parent_color_and_flags));
+	first_header_values |= parent_color << (8*offsetof(ct_entry, parent_color_and_flags) + PARENT_COLOR_SHIFT);
+
+	header_mask |= FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
+	second_header_values = first_header_values | FLAG_SECONDARY_BUCKET << (8*offsetof(ct_entry, parent_color_and_flags));
+
+	#ifdef MULTITHREADING
+	uint32_t first_start_counter = read_int_atomic(&(first_bucket->write_lock_and_seq));
+	uint32_t second_start_counter = read_int_atomic(&(secondary_bucket->write_lock_and_seq));
+	if ((first_start_counter & SEQ_INCREMENT) || (second_start_counter & SEQ_INCREMENT))
+		return NULL;   // One of the buckets is being written. The retry loop will call us again.
+	#else
+	assert(first_bucket->write_lock_and_seq == 0);
+	assert(secondary_bucket->write_lock_and_seq == 0);
+	#endif
+
+	int found_index = find_free_cell_by_mask(first_bucket, secondary_bucket, header_mask, first_header_values, second_header_values);
+	int is_primary;
+	ct_bucket* found_bucket;
+	if (found_index == -1)
+		return NULL;
+
+	if (found_index < CUCKOO_BUCKET_SIZE) {
+		is_primary = 1;
+		found_bucket = first_bucket;
+	} else {
+		is_primary = 0;
+		found_index -= CUCKOO_BUCKET_SIZE;
+		found_bucket = secondary_bucket;
+	}
+#ifdef MULTITHREADING
+	if ((is_primary & read_int_atomic(&(first_bucket->write_lock_and_seq)) != first_start_counter) ||
+		(!is_primary & read_int_atomic(&(secondary_bucket->write_lock_and_seq)) != second_start_counter)) {
+		// The used bucket changed while we read it. We rely on the retry loop in
+		// find_entry_in_pair_by_parent to call us again
+		return NULL;
+	}
+	result->last_seq = is_primary ? first_start_counter : second_start_counter;
+#endif
+
+	result->last_pos = &(found_bucket->cells[found_index]);
 	if (!result->last_pos)
 		__builtin_unreachable();
 	return result->last_pos;
@@ -327,12 +444,21 @@ ct_entry_storage* find_entry_in_pair_by_color(cuckoo_trie* trie, ct_entry_local_
 	uint64_t count = 0;
 
 	while (1) {
+		#ifndef INTRINSICS
 		entry_addr = find_entry_in_bucket_by_color(&(trie->buckets[primary_bucket]), result, 0, tag, color);
 		if (entry_addr)
 			break;
-
 		uint64_t secondary_bucket = mix_bucket(trie, primary_bucket, tag);
 		entry_addr = find_entry_in_bucket_by_color(&(trie->buckets[secondary_bucket]), result, 1, tag, color);
+		
+		#else
+		uint64_t secondary_bucket = mix_bucket(trie, primary_bucket, tag);
+		entry_addr = find_entry_in_bucket_by_color_vectorized(&(trie->buckets[primary_bucket]),
+		                                                      &(trie->buckets[secondary_bucket]),
+		                                                      result,
+															  tag,
+															  color);
+		#endif
 		if (entry_addr)
 			break;
 
@@ -356,6 +482,7 @@ ct_entry_storage* find_entry_in_pair_by_parent(cuckoo_trie* trie, ct_entry_local
 	uint64_t count = 0;
 
 	while (1) {
+		#ifndef INTRINSICS
 		entry_addr = find_entry_in_bucket_by_parent(&(trie->buckets[primary_bucket]), result, 0, tag,
 													last_symbol, parent_color);
 		if (entry_addr)
@@ -364,6 +491,16 @@ ct_entry_storage* find_entry_in_pair_by_parent(cuckoo_trie* trie, ct_entry_local
 		uint64_t secondary_bucket_num = mix_bucket(trie, primary_bucket, tag);
 		entry_addr = find_entry_in_bucket_by_parent(&(trie->buckets[secondary_bucket_num]), result, 1, tag,
 													last_symbol, parent_color);
+		#else
+		uint64_t secondary_bucket = mix_bucket(trie, primary_bucket, tag);
+		entry_addr = find_entry_in_bucket_by_parent_vectorized(&(trie->buckets[primary_bucket]),
+		                                                      &(trie->buckets[secondary_bucket]),
+		                                                      result,
+															  tag,
+															  last_symbol,
+															  parent_color);
+		#endif
+
 		if (entry_addr)
 			break;
 

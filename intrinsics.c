@@ -8,5 +8,6 @@ int find_free_cell_by_mask(ct_bucket* primary_bucket, ct_bucket* secondary_bucke
     UNUSED_PARAMETER(mask);
     UNUSED_PARAMETER(primary_values);
     UNUSED_PARAMETER(secondary_values);
+    // TODO: Impelement..
     return -1;
 }
