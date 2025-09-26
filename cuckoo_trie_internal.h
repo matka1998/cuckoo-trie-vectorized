@@ -1,3 +1,6 @@
+#ifndef CUCKOO_TRIE_INTERNAL_H
+#define CUCKOO_TRIE_INTERNAL_H
+
 #include <assert.h>
 #include <stddef.h>
 #include "cuckoo_trie.h"
@@ -316,3 +319,5 @@ static inline void entry_set_kv(ct_entry* entry, ct_kv* kv) {
 	entry->key.low_dword = address_as_uint;
 	entry->key.high_word = (address_as_uint >> 32) & 0xFFFF;
 }
+
+#endif // CUCKOO_TRIE_INTERNAL_H

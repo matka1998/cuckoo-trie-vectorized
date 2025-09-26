@@ -12,9 +12,18 @@ BINARIES=libcuckoo_trie.so libcuckoo_trie_debug.so test test_debug benchmark
 OPTIMIZE_FLAGS=-O3 -fvisibility=hidden -flto -fno-strict-aliasing
 
 # Add -march=haswell to enable the bextr_u32 builtin
-FLAGS=-march=haswell -Wreturn-type -Wuninitialized -Wunused-parameter
+FLAGS=-march=native -Wreturn-type -Wuninitialized -Wunused-parameter
 
 CC ?= gcc
+
+USE_INTRINSICS :=
+
+ifneq ($(NOSIMD),1)
+	FLAGS += -mavx512vbmi2 -mavx512vl -mavx2
+	LIB_SOURCES += intrinsics.c
+	LIB_DEPS += intrinsics.h
+	USE_INTRINSICS=-DINTRINSICS
+endif
 
 all: ${BINARIES}
 
@@ -22,10 +31,10 @@ clean:
 	rm ${BINARIES}
 
 libcuckoo_trie.so: Makefile ${LIB_DEPS}
-	${CC} ${FLAGS} ${OPTIMIZE_FLAGS} -fPIC -shared -march=haswell -DNDEBUG -o $@ ${LIB_SOURCES}
+	${CC} ${FLAGS} ${OPTIMIZE_FLAGS} -fPIC -shared -march=haswell -DNDEBUG ${USE_INTRINSICS} -o $@ ${LIB_SOURCES}
 
 libcuckoo_trie_debug.so: Makefile ${LIB_DEPS}
-	${CC} ${FLAGS} -O1 -fPIC -shared -march=haswell -g -o $@ ${LIB_SOURCES}
+	${CC} ${FLAGS} -O1 -fPIC -shared -march=haswell -g ${USE_INTRINSICS} -o $@ ${LIB_SOURCES}
 
 test: Makefile ${TEST_DEPS}
 	${CC} ${FLAGS} ${OPTIMIZE_FLAGS} -Wl,-rpath=. -o $@ ${TEST_SOURCES} libcuckoo_trie.so -lpthread

@@ -1,3 +1,6 @@
+#ifndef KEY_OBJECT_H
+#define KEY_OBJECT_H
+
 #include <stdint.h>
 #include <string.h>
 
@@ -60,3 +63,5 @@ static int kv_key_compare_to(ct_kv* kv, uint64_t size, uint8_t* bytes) {
 static int kv_key_compare(ct_kv* k1, ct_kv* k2) {
     return kv_key_compare_to(k1, kv_key_size(k2), kv_key_bytes(k2));
 }
+
+#endif // KEY_OBJECT_H

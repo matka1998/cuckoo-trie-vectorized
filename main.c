@@ -10,6 +10,10 @@
 #include "main.h"
 #include "util.h"
 
+#ifdef INTRINSICS
+#include "intrinsics.h"
+#endif
+
 // The root has to have a last symbol in order to have an alternate bucket.
 // The following value was arbitrarily chosen.
 #define ROOT_LAST_SYMBOL 0
