@@ -465,7 +465,6 @@ ct_entry_descriptor find_entry_in_pair_by_color(cuckoo_trie* trie, ct_entry_loca
 		if (entry_addr.common)
 			break;
 
-		uint64_t secondary_bucket = mix_bucket(trie, primary_bucket, tag);
 		entry_addr = find_entry_in_bucket_by_color(&(trie->buckets[secondary_bucket]), result, 1, tag, color);
 		#else
 		entry_addr = find_entry_in_bucket_by_color_vectorized(&(trie->buckets[primary_bucket]),
