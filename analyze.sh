@@ -2,7 +2,7 @@
 
 set -e
 #TODO: Maybe run with different flags?
-ITERATIONS=${1:-2} # TODO: Choose number of iterations instead of 2
+ITERATIONS=${1:-10}
 RESULT_FILE="result.csv"
 BENCHMARK_BINARY="benchmark"
 
@@ -15,16 +15,25 @@ SETTINGS=(
 
 SUB_BENCHMARKS=( # TODO: Choose the benchmarks to run
     "insert"
-    "pos-lookup"
+    #"pos-lookup"
     #"mt-pos-lookup"
     #"mw-insert-pos-lookup"
     #"range-read"
     #"range-prefetch"
     #"range-skip"
-    #"mem-usage"
-    #"mt-insert"
+    "mem-usage"
+    "mt-insert"
     "ycsb-a"
-    # Continue..
+    "ycsb-b"
+    "ycsb-c"
+    "ycsb-d"
+    "ycsb-e"
+    "ycsb-f"
+)
+
+DATASETS=(
+    "rand-8"
+    "rand-16"
 )
 
 echo "Running benchmark suite with $ITERATIONS iterations per test"
@@ -39,15 +48,18 @@ run_benchmark() {
 
     echo "Running $benchmark_name with setting: $setting"
 
-    # TODO: Choose the datasets to run
-    for ((i=1; i<=ITERATIONS; i++)); do
-        "$binary_path" "$benchmark_name" rand-8 > output.txt
+    for dataset in "${DATASETS[@]}"; do
+        echo "" > output.txt # To remove old data
+        echo "Running $benchmark_name with setting: $setting and dataset $dataset"
+        for ((i=1; i<=ITERATIONS; i++)); do
+            "$binary_path" "$benchmark_name" "$dataset" >> output.txt
+        done
+        benchmark_time=$(grep "RESULT:" output.txt | grep -o "ms=[0-9]*" | cut -d'=' -f2 | awk '{sum+=$1; n++} END {if(n>0) print sum/n; else print 0}')
+        echo "Benchmark_times: $(grep "RESULT:" output.txt | grep -o "ms=[0-9]*" | cut -d'=' -f2)"
+        echo "$setting,$benchmark_name,$dataset,$benchmark_time" >> "$RESULT_FILE"
+        echo "  Completed in ${benchmark_time}ms"
     done
 
-    benchmark_time=$(grep "RESULT:" output.txt | grep -o "ms=[0-9]*" | cut -d'=' -f2)
-
-    echo "$benchmark_name,$setting,$benchmark_time" >> "$RESULT_FILE"
-    echo "  Completed in ${benchmark_time}ms"
 }
 
 build_benchmark() {
@@ -184,7 +196,7 @@ main() {
         fi
     fi
 
-    echo "benchmark_name,setting,benchmark_time" > "$RESULT_FILE"
+    echo "setting,benchmark_name,dataset,benchmark_time" > "$RESULT_FILE"
 
     original_branch=$(git rev-parse --abbrev-ref HEAD)
     echo "Current branch: $original_branch"
