@@ -3,17 +3,15 @@
 
 
 inline __m128i load_all_common_headers_in_bucket(ct_bucket* bucket) {
-
     uint8_t headers[CUCKOO_BUCKET_SIZE*4] = { 0 };
     for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
         for (int j = 0; j < 3; j++) {
-            headers[i * 4 + j] = __atomic_load_n((uint8_t*)&bucket->cells[i], __ATOMIC_ACQUIRE);
+            headers[i * 4 + j] = __atomic_load_n((uint8_t*)&bucket->cells[i] + j, __ATOMIC_ACQUIRE);
         }
     }
-    // 3 bytes for each common header, 4 headers per bucket totals 12 bytes, or 1 qword + 1 dword.
 
     // Then read and expand.
-    return _mm_load_epi32(headers);
+    return _mm_load_si128((const __m128i*)headers);
 }
 
 inline __m256i load_both_bucket_common_headers(ct_bucket * primary_bucket, ct_bucket * secondary_bucket) {
