@@ -246,6 +246,8 @@ ct_entry_storage* find_entry_in_bucket_by_color_vectorized(ct_bucket* first_buck
 		found_index -= CUCKOO_BUCKET_SIZE;
 		found_bucket = secondary_bucket;
 	}
+	read_entry_non_atomic(&(found_bucket->cells[found_index]), &(result->value));
+
 #ifdef MULTITHREADING
 	if ((is_primary & read_int_atomic(&(first_bucket->write_lock_and_seq)) != first_start_counter) ||
 		(!is_primary & read_int_atomic(&(secondary_bucket->write_lock_and_seq)) != second_start_counter)) {
@@ -358,6 +360,8 @@ ct_entry_storage* find_entry_in_bucket_by_parent_vectorized(ct_bucket* first_buc
 		found_index -= CUCKOO_BUCKET_SIZE;
 		found_bucket = secondary_bucket;
 	}
+	read_entry_non_atomic(&(found_bucket->cells[found_index]), &(result->value));
+
 #ifdef MULTITHREADING
 	if ((is_primary & read_int_atomic(&(first_bucket->write_lock_and_seq)) != first_start_counter) ||
 		(!is_primary & read_int_atomic(&(secondary_bucket->write_lock_and_seq)) != second_start_counter)) {
