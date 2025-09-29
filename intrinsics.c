@@ -2,23 +2,27 @@
 #include <immintrin.h>
 
 inline __m128i load_all_common_headers_in_bucket(ct_bucket* bucket) {
-    __mmask16 load_mask = 0b0111011101110111;
+    // The common header is 3 bytes per cell, 4 cells -> 12 bytes total per bucket
+    // Load atomically as 64-bit + 32-bit, then expand to four 32-bit lanes
+    uint64_t* bucket_headers_first_part = (uint64_t*)&bucket->common_cells[0];
+    uint32_t* bucket_headers_second_part = (uint32_t*)(((uint64_t*)&bucket->common_cells[0]) + 1);
 
-    assert((sizeof(ct_common_header_storage) * CUCKOO_BUCKET_SIZE) == 12);
+    const uint64_t first8 = __atomic_load_n(bucket_headers_first_part, __ATOMIC_ACQUIRE);
+    const uint32_t next4  = __atomic_load_n(bucket_headers_second_part, __ATOMIC_ACQUIRE);
 
-    ct_common_header_storage headers[CUCKOO_BUCKET_SIZE];
-    // 3 bytes for each common header, 4 headers per bucket totals 12 bytes, or 1 qword + 1 dword.
-    uint64_t * local_headers_first_part = (uint64_t*) &headers[0];
-    uint32_t * local_headers_second_part = (uint32_t*) (((uint64_t *)&headers[0]) + 1);
-    uint64_t * bucket_headers_first_part = (uint64_t*) &bucket->common_cells[0];
-    uint32_t * bucket_headers_second_part = (uint32_t*) (((uint64_t*)&bucket->common_cells[0]) + 1);
+    // Build a 128-bit vector of the 12 bytes (upper 4 bytes zero)
+    __m128i bytes128 = _mm_setzero_si128();
+    bytes128 = _mm_insert_epi64(bytes128, (long long)first8, 0);
+    bytes128 = _mm_insert_epi32(bytes128, (int)next4, 2); // place at byte offset 8..11
 
-    // first atomically load the entire bucket.
-    *local_headers_first_part = __atomic_load_n(bucket_headers_first_part, __ATOMIC_ACQUIRE);
-    *local_headers_second_part = __atomic_load_n(bucket_headers_second_part, __ATOMIC_ACQUIRE);
-
-    // Then read and expand.
-    return _mm_maskz_expandloadu_epi8(load_mask, &headers[0]);
+    // Shuffle mask to expand 3 bytes -> 4 bytes per lane with zero in the MSB
+    const __m128i shuffle = _mm_setr_epi8(
+        0, 1, 2, (char)0x80,
+        3, 4, 5, (char)0x80,
+        6, 7, 8, (char)0x80,
+        9,10,11, (char)0x80
+    );
+    return _mm_shuffle_epi8(bytes128, shuffle);
 }
 
 inline __m256i load_both_bucket_common_headers(ct_bucket * primary_bucket, ct_bucket * secondary_bucket) {
