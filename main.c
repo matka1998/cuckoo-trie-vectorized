@@ -241,23 +241,25 @@ ct_entry_storage* find_entry_in_bucket_by_color_vectorized(ct_bucket* first_buck
 	if (found_index < CUCKOO_BUCKET_SIZE) {
 		is_primary = 1;
 		found_bucket = first_bucket;
+		#ifdef MULTITHREADING
+		if (read_int_atomic(&(first_bucket->write_lock_and_seq)) != first_start_counter) {
+			return NULL;
+		}
+		result->last_seq = first_start_counter;
+		#endif
 	} else {
 		is_primary = 0;
 		found_index -= CUCKOO_BUCKET_SIZE;
 		found_bucket = secondary_bucket;
+		#ifdef MULTITHREADING
+		if (read_int_atomic(&(secondary_bucket->write_lock_and_seq)) != second_start_counter) {
+			return NULL;
+		}
+		result->last_seq = second_start_counter;
+		#endif
 	}
-	read_entry_non_atomic(&(found_bucket->cells[found_index]), &(result->value));
-
-#ifdef MULTITHREADING
-	if ((is_primary & read_int_atomic(&(first_bucket->write_lock_and_seq)) != first_start_counter) ||
-		(!is_primary & read_int_atomic(&(secondary_bucket->write_lock_and_seq)) != second_start_counter)) {
-		// The used bucket changed while we read it. We rely on the retry loop in
-		// find_entry_in_pair_by_color to call us again
-		return NULL;
-	}
-	result->last_seq = is_primary ? first_start_counter : second_start_counter;
-#endif
-
+ 	read_entry_non_atomic(&(found_bucket->cells[found_index]), &(result->value));
+	
 	result->last_pos = &(found_bucket->cells[found_index]);
 	if (!result->last_pos)
 		__builtin_unreachable();
@@ -355,22 +357,24 @@ ct_entry_storage* find_entry_in_bucket_by_parent_vectorized(ct_bucket* first_buc
 	if (found_index < CUCKOO_BUCKET_SIZE) {
 		is_primary = 1;
 		found_bucket = first_bucket;
+		#ifdef MULTITHREADING
+		if (read_int_atomic(&(first_bucket->write_lock_and_seq)) != first_start_counter) {
+			return NULL;
+		}
+		result->last_seq = first_start_counter;
+		#endif
 	} else {
 		is_primary = 0;
 		found_index -= CUCKOO_BUCKET_SIZE;
 		found_bucket = secondary_bucket;
+		#ifdef MULTITHREADING
+		if (read_int_atomic(&(secondary_bucket->write_lock_and_seq)) != second_start_counter) {
+			return NULL;
+		}
+		result->last_seq = second_start_counter;
+		#endif
 	}
 	read_entry_non_atomic(&(found_bucket->cells[found_index]), &(result->value));
-
-#ifdef MULTITHREADING
-	if ((is_primary & read_int_atomic(&(first_bucket->write_lock_and_seq)) != first_start_counter) ||
-		(!is_primary & read_int_atomic(&(secondary_bucket->write_lock_and_seq)) != second_start_counter)) {
-		// The used bucket changed while we read it. We rely on the retry loop in
-		// find_entry_in_pair_by_parent to call us again
-		return NULL;
-	}
-	result->last_seq = is_primary ? first_start_counter : second_start_counter;
-#endif
 
 	result->last_pos = &(found_bucket->cells[found_index]);
 	if (!result->last_pos)
