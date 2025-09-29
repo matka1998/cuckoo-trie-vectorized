@@ -34,7 +34,12 @@ def plot_benchmarks(csv_path, output_dir="benchmark_plots"):
         # Get colors for each bar based on setting
         colors = [COLOR_MAPPING[setting] for setting in group["setting"]]
 
-        plt.bar(x_labels, y_values, color=colors)
+        bars = plt.bar(x_labels, y_values, color=colors)
+        for bar, y in zip(bars, y_values):
+            plt.text(bar.get_x() + bar.get_width() / 2.0,
+                     bar.get_height(),
+                     f"{y:.2f}",
+                     ha="center", va="bottom")
         plt.xticks(rotation=45, ha="right")
         plt.ylabel("benchmark_time")
         plt.xlabel("setting | dataset")
